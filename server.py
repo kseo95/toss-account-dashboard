@@ -109,6 +109,46 @@ def get_buying_power(token: str, account_seq: str, currency: str) -> float:
     return to_float(data.get("cashBuyingPower"))
 
 
+def _fmt_as_of(ts: float) -> str:
+    """기준 시각 표기: 오늘이면 HH:MM, 아니면 MM-DD HH:MM (로컬 시간). real/portfolio.py와 동일."""
+    t = time.localtime(ts)
+    same_day = time.strftime("%Y%m%d", t) == time.strftime("%Y%m%d")
+    return time.strftime("%H:%M" if same_day else "%m-%d %H:%M", t)
+
+
+def get_usd_jpy_quote() -> dict:
+    """USD/JPY {rate, source, as_of}. 토스 API는 JPY를 지원하지 않아 Yahoo Finance(비공식)를 쓴다."""
+    resp = requests.get(
+        "https://query1.finance.yahoo.com/v8/finance/chart/JPY=X",
+        params={"interval": "1m", "range": "1d"},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    result = resp.json()["chart"]["result"][0]
+    meta = result["meta"]
+    # regularMarketTime은 마감 후에도 갱신돼 실제 마지막 체결보다 늦게 찍히므로, 마지막 1분봉 시각을 기준 시각으로 쓴다.
+    candles = [(t, c) for t, c in zip(result.get("timestamp") or [], result["indicators"]["quote"][0]["close"]) if c]
+    as_of_ts = candles[-1][0] if candles else float(meta["regularMarketTime"])
+    return {"rate": float(meta["regularMarketPrice"]), "source": "Yahoo Finance", "as_of": _fmt_as_of(float(as_of_ts))}
+
+
+_usd_jpy_cache: dict = {"value": None, "ts": 0.0}
+USD_JPY_REFRESH_INTERVAL = 60  # 초. 매 홀딩스 조회마다 외부 API를 부르지 않도록 이 주기로만 갱신.
+
+
+def get_cached_usd_jpy_quote() -> dict | None:
+    """USD/JPY는 토스 API가 아니라 외부(Yahoo)라 실패할 수 있음 - 실패하면 직전 값을 그대로 유지한다."""
+    now = time.time()
+    if now - _usd_jpy_cache["ts"] >= USD_JPY_REFRESH_INTERVAL:
+        try:
+            _usd_jpy_cache["value"] = get_usd_jpy_quote()
+        except (requests.exceptions.RequestException, KeyError, IndexError, TypeError, ValueError):
+            pass
+        _usd_jpy_cache["ts"] = now
+    return _usd_jpy_cache["value"]
+
+
 def get_stock_info(token: str, symbols: list[str]) -> dict[str, dict]:
     """심볼 목록의 기본정보(이름/시장 등)를 조회. 리밸런싱 목표 저장 시 존재하는 종목인지 검증하는 용도."""
     if not symbols:
@@ -142,8 +182,9 @@ def save_cash_symbols(symbols: list[str]) -> None:
 
 
 def load_rebalance_config() -> dict:
-    """리밸런싱 목표 설정을 읽는다. 파일이 없거나 깨졌으면 기본값(카테고리 없음, 미분류 종목은 각각 5%)으로 취급한다."""
-    default = {"targets": [], "default_rest_target_pct": 5.0}
+    """리밸런싱 목표 설정을 읽는다. 파일이 없거나 깨졌으면 기본값(카테고리 없음, 미분류 종목은 각각 5%,
+    원/달러 목표 비중은 50/50)으로 취급한다."""
+    default = {"targets": [], "default_rest_target_pct": 5.0, "krw_target_pct": 50.0}
     try:
         data = json.loads(REBALANCE_CONFIG_FILE.read_text(encoding="utf-8"))
         clean_targets = []
@@ -157,6 +198,7 @@ def load_rebalance_config() -> dict:
         return {
             "targets": clean_targets,
             "default_rest_target_pct": to_float(data.get("default_rest_target_pct"), default["default_rest_target_pct"]),
+            "krw_target_pct": to_float(data.get("krw_target_pct"), default["krw_target_pct"]),
         }
     except (FileNotFoundError, json.JSONDecodeError, AttributeError):
         return default
@@ -214,12 +256,16 @@ def validate_rebalance_targets(targets) -> tuple[list[dict], str | None]:
     return clean, None
 
 
-def save_rebalance_config(targets: list[dict], default_rest_target_pct: float) -> None:
+def save_rebalance_config(targets: list[dict], default_rest_target_pct: float, krw_target_pct: float) -> None:
     with _rebalance_lock:
         tmp = REBALANCE_CONFIG_FILE.with_suffix(".json.tmp")
         tmp.write_text(
             json.dumps(
-                {"targets": targets, "default_rest_target_pct": default_rest_target_pct},
+                {
+                    "targets": targets,
+                    "default_rest_target_pct": default_rest_target_pct,
+                    "krw_target_pct": krw_target_pct,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -279,13 +325,17 @@ def compute_rebalance(
     return list(merged.values())
 
 
-def compute_currency_split(all_rows: list[dict], cash_krw_amt: float, cash_usd_amt: float, usd_krw: float, total_eval: float) -> dict:
-    """전체 자산 중 원화/달러 통화 비중 (예수금 포함)."""
+def compute_currency_split(
+    all_rows: list[dict], cash_krw_amt: float, cash_usd_amt: float, usd_krw: float, total_eval: float, krw_target_pct: float
+) -> dict:
+    """전체 자산 중 원화/달러 통화 비중 (예수금 포함) + 목표 비중. 달러 목표는 100-원화 목표로 자동 계산."""
     krw_amount = cash_krw_amt + sum(r["평가금액(원)"] for r in all_rows if r["통화"] == "KRW")
     usd_amount = cash_usd_amt * usd_krw + sum(r["평가금액(원)"] for r in all_rows if r["통화"] == "USD")
     return {
         "krw_pct": (krw_amount / total_eval * 100) if total_eval else 0.0,
         "usd_pct": (usd_amount / total_eval * 100) if total_eval else 0.0,
+        "krw_target_pct": krw_target_pct,
+        "usd_target_pct": 100.0 - krw_target_pct,
     }
 
 
@@ -350,7 +400,9 @@ def fetch_holdings_data(token: str, accounts: list[dict]) -> dict:
 
     rebalance_config = load_rebalance_config()
     rebalance = compute_rebalance(rows, cash_krw_total, cash_symbols, total_eval, rebalance_config)
-    currency_split = compute_currency_split(rows, cash_krw_amt, cash_usd_amt, usd_krw, total_eval)
+    currency_split = compute_currency_split(
+        rows, cash_krw_amt, cash_usd_amt, usd_krw, total_eval, rebalance_config["krw_target_pct"]
+    )
 
     return {
         "stocks": stock_rows,
@@ -368,6 +420,8 @@ def fetch_holdings_data(token: str, accounts: list[dict]) -> dict:
         },
         "rebalance": rebalance,
         "currency_split": currency_split,
+        "usd_krw": usd_krw,
+        "usd_jpy": get_cached_usd_jpy_quote(),
     }
 
 
@@ -599,6 +653,10 @@ class Handler(BaseHTTPRequestHandler):
             if not (0 <= default_rest_target_pct <= 100):
                 return self._send_json(400, {"error": "미분류 종목 기본 목표%는 0~100 사이 숫자여야 합니다."})
 
+            krw_target_pct = to_float(data.get("krw_target_pct"), -1)
+            if not (0 <= krw_target_pct <= 100):
+                return self._send_json(400, {"error": "목표 원화 비중%는 0~100 사이 숫자여야 합니다."})
+
             # 새로 목표에 넣은 종목이 실제 존재하는지 토스 API로 확인 (real/의 관례와 동일)
             all_symbols = sorted({s for t in targets for s in t["symbols"]})
             if all_symbols:
@@ -613,9 +671,15 @@ class Handler(BaseHTTPRequestHandler):
                 if missing:
                     return self._send_json(400, {"error": f"존재하지 않는 종목 코드입니다: {', '.join(missing)}"})
 
-            save_rebalance_config(targets, default_rest_target_pct)
+            save_rebalance_config(targets, default_rest_target_pct, krw_target_pct)
             return self._send_json(
-                200, {"ok": True, "targets": targets, "default_rest_target_pct": default_rest_target_pct}
+                200,
+                {
+                    "ok": True,
+                    "targets": targets,
+                    "default_rest_target_pct": default_rest_target_pct,
+                    "krw_target_pct": krw_target_pct,
+                },
             )
 
         if path == "/api/logout":
