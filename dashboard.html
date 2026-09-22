@@ -13,6 +13,7 @@
     --card: #161b22;
     --accent: #3b82f6;
     --danger: #e66767;
+    --profit: #4fae5f;
   }
   * { box-sizing: border-box; }
   body {
@@ -56,6 +57,7 @@
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 24px;
+    align-self: flex-start;
   }
   #loginCard h2 { font-size: 16px; margin: 0 0 4px; }
   #loginCard p.hint { color: var(--muted); font-size: 12px; margin: 0 0 20px; line-height: 1.5; }
@@ -91,23 +93,72 @@
     margin-bottom: 10px;
   }
 
-  #connectedView { display: none; width: 100%; max-width: 640px; }
-  #connectedView .status {
+  #connectedView { display: none; width: 100%; max-width: 860px; }
+  .card {
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 20px;
+    margin-bottom: 16px;
   }
-  #connectedView .status h2 { font-size: 15px; margin: 0 0 12px; }
-  #accountList { list-style: none; margin: 0; padding: 0; }
-  #accountList li {
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .card h2 .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .currency-toggle {
+    display: inline-flex;
+    margin-left: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    vertical-align: middle;
+  }
+  .currency-toggle button {
+    background: transparent;
+    border: none;
     color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 3px 12px;
+    cursor: pointer;
   }
-  #accountList li:last-child { border-bottom: none; }
-  #accountList code { color: var(--text); }
+  .currency-toggle button + button { border-left: 1px solid var(--border); }
+  .currency-toggle button.active { background: var(--accent); color: #fff; }
+
+  #summaryCards { display: flex; gap: 12px; margin-bottom: 16px; }
+  #summaryCards .stat { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  #summaryCards .stat .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  #summaryCards .stat .value { font-size: 18px; font-weight: 700; }
+
+  .profit { color: var(--profit); }
+  .loss { color: var(--danger); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tbody tr:last-child td { border-bottom: none; }
+  .empty-row td { color: var(--muted); text-align: left; }
+
+  details.settings summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+    user-select: none;
+  }
+  details.settings summary:hover { color: var(--text); }
+  .cash-symbol-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+  .cash-symbol-row .name { color: var(--muted); }
+  .cash-symbol-row .unheld-tag { color: var(--muted); font-size: 11px; }
+  .cash-symbol-row button.unset {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 5px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: auto;
+  }
+  .cash-symbol-row button.unset:hover { color: var(--danger); border-color: var(--danger); }
+  #saveCashSymbolsBtn {
+    margin-top: 12px; padding: 7px 14px; background: var(--accent); color: #fff;
+    border: none; border-radius: 6px; font-size: 13px; cursor: pointer;
+  }
+  #saveCashSymbolsBtn:disabled { opacity: 0.6; cursor: default; }
+  #cashSymbolsSaved { color: var(--muted); font-size: 12px; margin-left: 10px; display: none; }
 </style>
 </head>
 <body>
@@ -128,9 +179,39 @@
   </div>
 
   <div id="connectedView">
-    <div class="status">
-      <h2>연결됨</h2>
-      <ul id="accountList"></ul>
+    <div id="dashboardError" style="display:none; color: var(--danger); background: var(--card); border: 1px solid var(--danger); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px;"></div>
+    <div id="summaryCards">
+      <div class="stat"><div class="label">총 평가금액 (예수금 포함)</div><div class="value" id="totalEval">-</div></div>
+      <div class="stat"><div class="label">총 손익</div><div class="value" id="totalPl">-</div></div>
+      <div class="stat"><div class="label">총 수익률</div><div class="value" id="totalRate">-</div></div>
+    </div>
+
+    <div class="card">
+      <h2>현금</h2>
+      <table><thead><tr>
+        <th>항목</th><th>금액(원)</th>
+      </tr></thead><tbody id="cashRows"></tbody></table>
+
+      <details class="settings">
+        <summary>현금 취급 종목 설정</summary>
+        <div id="cashSymbolPicker" style="margin-top:10px;"></div>
+        <button id="saveCashSymbolsBtn">저장</button>
+        <span id="cashSymbolsSaved">저장됨</span>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>국내 종목</h2>
+      <table><thead><tr>
+        <th>종목</th><th>수량</th><th>평가금액(원)</th><th>손익(원)</th><th>수익률(%)</th><th>지분율(%)</th>
+      </tr></thead><tbody id="krRows"></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>해외 종목<span class="currency-toggle" id="usCurrencyToggle"><button type="button" data-mode="krw" class="active">원</button><button type="button" data-mode="usd">$</button></span></h2>
+      <table><thead><tr>
+        <th>종목</th><th>수량</th><th id="usEvalHeader">평가금액(원)</th><th id="usPlHeader">손익(원)</th><th>수익률(%)</th><th>지분율(%)</th>
+      </tr></thead><tbody id="usRows"></tbody></table>
     </div>
   </div>
 </main>
@@ -143,7 +224,19 @@ const loginBtn = document.getElementById('loginBtn');
 const loginError = document.getElementById('loginError');
 const appKeyInput = document.getElementById('appKey');
 const appSecretInput = document.getElementById('appSecret');
-const accountList = document.getElementById('accountList');
+
+const totalEvalEl = document.getElementById('totalEval');
+const totalPlEl = document.getElementById('totalPl');
+const totalRateEl = document.getElementById('totalRate');
+const krRows = document.getElementById('krRows');
+const usRows = document.getElementById('usRows');
+const cashRows = document.getElementById('cashRows');
+const cashSymbolPicker = document.getElementById('cashSymbolPicker');
+const saveCashSymbolsBtn = document.getElementById('saveCashSymbolsBtn');
+const cashSymbolsSaved = document.getElementById('cashSymbolsSaved');
+
+let cashSymbolsDraft = new Set();   // 현금 취급 종목 설정 (체크박스 화면용 임시 상태)
+let heldSymbolsInfo = [];           // 현재 보유 중인 전체 종목 [{심볼, 종목, 수량}]
 
 function showError(msg) {
   loginError.textContent = msg;
@@ -162,22 +255,220 @@ function showLoggedOut() {
   logoutBtn.style.display = 'none';
 }
 
-async function loadAccounts() {
-  const res = await fetch('/api/accounts');
-  if (!res.ok) {
+function fmtWon(n) {
+  return Math.round(n).toLocaleString('ko-KR') + '원';
+}
+function fmtUsd(n) {
+  const sign = n < 0 ? '-' : '';
+  return sign + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtPct(n) {
+  const sign = n > 0 ? '+' : '';
+  return sign + n.toFixed(2) + '%';
+}
+function signClass(n) {
+  return n > 0 ? 'profit' : (n < 0 ? 'loss' : '');
+}
+
+// 국내/해외 종목 표에 공통으로 쓰는 셀 마크업 (종목명+심볼, 수량 / 수익률·지분율).
+function symbolQtyCells(r) {
+  return `
+    <td>${r['종목']} <span style="color:var(--muted)">(${r['심볼']})</span></td>
+    <td>${r['수량'].toLocaleString('ko-KR')}</td>
+  `;
+}
+function rateShareCells(r) {
+  return `
+    <td class="${signClass(r['수익률(%)'])}">${fmtPct(r['수익률(%)'])}</td>
+    <td>${r['지분율(%)'].toFixed(2)}%</td>
+  `;
+}
+
+function renderStockRows(tbody, rows) {
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">보유 종목이 없습니다.</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      ${symbolQtyCells(r)}
+      <td>${fmtWon(r['평가금액(원)'])}</td>
+      <td class="${signClass(r['손익(원)'])}">${fmtWon(r['손익(원)'])}</td>
+      ${rateShareCells(r)}
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// 해외 종목 표: 원/$ 토글에 따라 평가금액·손익 컬럼 값을 바꿔서 보여준다(재조회 없이 캐시된 데이터로 다시 그림).
+let usCurrencyMode = 'krw';   // 'krw' | 'usd'
+let lastUsStocks = [];
+
+function renderUsRows(rows, mode) {
+  lastUsStocks = rows;
+  document.getElementById('usEvalHeader').textContent = mode === 'usd' ? '평가금액($)' : '평가금액(원)';
+  document.getElementById('usPlHeader').textContent = mode === 'usd' ? '손익($)' : '손익(원)';
+
+  usRows.innerHTML = '';
+  if (!rows.length) {
+    usRows.innerHTML = '<tr class="empty-row"><td colspan="6">보유 종목이 없습니다.</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const evalVal = mode === 'usd' ? r['평가금액(외화)'] : r['평가금액(원)'];
+    const plVal = mode === 'usd' ? r['손익(외화)'] : r['손익(원)'];
+    const fmtEval = evalVal == null ? '-' : (mode === 'usd' ? fmtUsd(evalVal) : fmtWon(evalVal));
+    const fmtPl = plVal == null ? '-' : (mode === 'usd' ? fmtUsd(plVal) : fmtWon(plVal));
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      ${symbolQtyCells(r)}
+      <td>${fmtEval}</td>
+      <td class="${signClass(plVal || 0)}">${fmtPl}</td>
+      ${rateShareCells(r)}
+    `;
+    usRows.appendChild(tr);
+  });
+}
+
+document.querySelectorAll('#usCurrencyToggle button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    usCurrencyMode = btn.dataset.mode;
+    document.querySelectorAll('#usCurrencyToggle button').forEach(b => b.classList.toggle('active', b === btn));
+    renderUsRows(lastUsStocks, usCurrencyMode);
+  });
+});
+
+function renderCashTable(cash) {
+  cashRows.innerHTML = '';
+  const rows = [];
+  if (cash.krw) rows.push(['예수금 (원화)', cash.krw]);
+  if (cash.usd) rows.push([`예수금 (달러, ${fmtUsd(cash.usd)} · 환율 ${cash.usd_krw_rate.toFixed(2)})`, cash.usd * cash.usd_krw_rate]);
+  (cash.stocks || []).forEach(r => rows.push([`${r['종목']} (${r['심볼']})`, r['평가금액(원)']]));
+
+  if (!rows.length) {
+    cashRows.innerHTML = '<tr class="empty-row"><td colspan="2">현금이 없습니다.</td></tr>';
+  } else {
+    rows.forEach(([label, amount]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${label}</td><td>${fmtWon(amount)}</td>`;
+      cashRows.appendChild(tr);
+    });
+  }
+  const totalTr = document.createElement('tr');
+  totalTr.innerHTML = `<td><strong>합계</strong></td><td><strong>${fmtWon(cash.total_krw)}</strong></td>`;
+  cashRows.appendChild(totalTr);
+}
+
+function renderCashSymbolPicker() {
+  cashSymbolPicker.innerHTML = '';
+  const heldSymbols = new Set(heldSymbolsInfo.map(s => s.심볼));
+
+  // 1) 현재 보유 중인 종목: 체크박스로 선택
+  heldSymbolsInfo.forEach(s => {
+    const row = document.createElement('label');
+    row.className = 'cash-symbol-row';
+    const checked = cashSymbolsDraft.has(s.심볼);
+    row.innerHTML = `
+      <input type="checkbox" data-symbol="${s.심볼}" ${checked ? 'checked' : ''}>
+      <span>${s.종목}</span>
+      <span class="name">(${s.심볼}, ${s.수량.toLocaleString('ko-KR')}주)</span>
+    `;
+    row.querySelector('input').addEventListener('change', (e) => {
+      if (e.target.checked) cashSymbolsDraft.add(s.심볼);
+      else cashSymbolsDraft.delete(s.심볼);
+    });
+    cashSymbolPicker.appendChild(row);
+  });
+
+  // 2) 설정은 돼 있지만 지금은 미보유인 종목: 해제 버튼만 제공 (0주로 남아있는 상태)
+  [...cashSymbolsDraft].filter(sym => !heldSymbols.has(sym)).forEach(sym => {
+    const row = document.createElement('div');
+    row.className = 'cash-symbol-row';
+    row.innerHTML = `
+      <span>${sym}</span>
+      <span class="unheld-tag">미보유 · 0주 · 설정만 남아있음</span>
+      <button class="unset" type="button">해제</button>
+    `;
+    row.querySelector('button').addEventListener('click', () => {
+      cashSymbolsDraft.delete(sym);
+      renderCashSymbolPicker();
+    });
+    cashSymbolPicker.appendChild(row);
+  });
+
+  if (!heldSymbolsInfo.length && cashSymbolsDraft.size === 0) {
+    cashSymbolPicker.innerHTML = '<div style="color:var(--muted)">보유 종목이 없습니다.</div>';
+  }
+}
+
+saveCashSymbolsBtn.addEventListener('click', async () => {
+  saveCashSymbolsBtn.disabled = true;
+  cashSymbolsSaved.style.display = 'none';
+  try {
+    const res = await fetch('/api/cash-symbols', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: [...cashSymbolsDraft] }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || '저장에 실패했습니다.');
+      return;
+    }
+    cashSymbolsSaved.style.display = 'inline';
+    await loadHoldings(); // 현금/종목 표 다시 계산해서 반영
+  } finally {
+    saveCashSymbolsBtn.disabled = false;
+  }
+});
+
+async function loadHoldings() {
+  const dashboardError = document.getElementById('dashboardError');
+  let holdingsRes, cashSymbolsRes;
+  try {
+    [holdingsRes, cashSymbolsRes] = await Promise.all([
+      fetch('/api/holdings'),
+      fetch('/api/cash-symbols'),
+    ]);
+  } catch (e) {
+    dashboardError.textContent = '서버에 연결할 수 없습니다.';
+    dashboardError.style.display = 'block';
+    return;
+  }
+
+  if (holdingsRes.status === 401) {
+    // 세션이 실제로 만료/무효화된 경우에만 로그인 화면으로 되돌아간다.
     showLoggedOut();
     return;
   }
-  const data = await res.json();
-  accountList.innerHTML = '';
-  (data.accounts || []).forEach(acc => {
-    const li = document.createElement('li');
-    li.innerHTML = `계좌 <code>${JSON.stringify(acc)}</code>`;
-    accountList.appendChild(li);
-  });
-  if (!data.accounts || data.accounts.length === 0) {
-    accountList.innerHTML = '<li>연결은 되었지만 조회된 계좌가 없습니다.</li>';
+  if (!holdingsRes.ok) {
+    // 401이 아닌 실패(토스 API 오류 등)는 로그인 화면으로 돌리지 않고 에러만 보여준다.
+    const err = await holdingsRes.json().catch(() => ({}));
+    dashboardError.textContent = err.error || `보유종목 조회에 실패했습니다 (${holdingsRes.status}).`;
+    dashboardError.style.display = 'block';
+    return;
   }
+  dashboardError.style.display = 'none';
+  const data = await holdingsRes.json();
+  const cashSymbolsData = cashSymbolsRes.ok ? await cashSymbolsRes.json() : { symbols: [] };
+
+  const krStocks = data.stocks.filter(r => r['시장'] === 'KR');
+  const usStocks = data.stocks.filter(r => r['시장'] !== 'KR');
+  renderStockRows(krRows, krStocks);
+  renderUsRows(usStocks, usCurrencyMode);
+  renderCashTable(data.cash);
+
+  totalEvalEl.textContent = fmtWon(data.totals.eval_krw);
+  totalPlEl.textContent = fmtWon(data.totals.profit_loss_krw);
+  totalPlEl.className = 'value ' + signClass(data.totals.profit_loss_krw);
+  totalRateEl.textContent = fmtPct(data.totals.rate_pct);
+  totalRateEl.className = 'value ' + signClass(data.totals.rate_pct);
+
+  heldSymbolsInfo = [...data.stocks, ...data.cash.stocks].map(r => ({ 심볼: r['심볼'], 종목: r['종목'], 수량: r['수량'] }));
+  cashSymbolsDraft = new Set(cashSymbolsData.symbols || []);
+  renderCashSymbolPicker();
 }
 
 async function checkSession() {
@@ -185,7 +476,7 @@ async function checkSession() {
   const data = await res.json();
   if (data.logged_in) {
     showLoggedIn();
-    await loadAccounts();
+    await loadHoldings();
   } else {
     showLoggedOut();
   }
@@ -215,7 +506,7 @@ loginBtn.addEventListener('click', async () => {
     appKeyInput.value = '';
     appSecretInput.value = '';
     showLoggedIn();
-    await loadAccounts();
+    await loadHoldings();
   } catch (e) {
     showError('서버에 연결할 수 없습니다.');
   } finally {

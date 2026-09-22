@@ -1,3 +1,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# 실제 계좌 설정(개인 데이터) - watchlist.txt/strategy_state.json과 같은 성격, 공개 저장소에 올리지 않음
+cash_symbols.json
