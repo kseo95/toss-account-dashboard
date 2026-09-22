@@ -9,6 +9,10 @@
     --bg: #0d1117;
     --border: #30363d;
     --text: #e6edf3;
+    --muted: #8b949e;
+    --card: #161b22;
+    --accent: #3b82f6;
+    --danger: #e66767;
   }
   * { box-sizing: border-box; }
   body {
@@ -22,13 +26,214 @@
   header {
     padding: 14px 20px;
     border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
   header h1 { font-size: 18px; margin: 0; }
+  #logoutBtn {
+    display: none;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #logoutBtn:hover { color: var(--text); border-color: var(--muted); }
+
+  main {
+    display: flex;
+    justify-content: center;
+    padding: 40px 20px;
+  }
+
+  #loginCard {
+    width: 100%;
+    max-width: 360px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+  }
+  #loginCard h2 { font-size: 16px; margin: 0 0 4px; }
+  #loginCard p.hint { color: var(--muted); font-size: 12px; margin: 0 0 20px; line-height: 1.5; }
+  #loginCard label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  #loginCard input {
+    width: 100%;
+    padding: 9px 10px;
+    margin-bottom: 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  #loginCard input:focus { outline: none; border-color: var(--accent); }
+  #loginCard button {
+    width: 100%;
+    padding: 10px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #loginCard button:disabled { opacity: 0.6; cursor: default; }
+  #loginError {
+    display: none;
+    color: var(--danger);
+    font-size: 12px;
+    margin-top: 4px;
+    margin-bottom: 10px;
+  }
+
+  #connectedView { display: none; width: 100%; max-width: 640px; }
+  #connectedView .status {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  #connectedView .status h2 { font-size: 15px; margin: 0 0 12px; }
+  #accountList { list-style: none; margin: 0; padding: 0; }
+  #accountList li {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #accountList li:last-child { border-bottom: none; }
+  #accountList code { color: var(--text); }
 </style>
 </head>
 <body>
 <header>
   <h1>토스증권 포트폴리오</h1>
+  <button id="logoutBtn">로그아웃</button>
 </header>
+<main>
+  <div id="loginCard">
+    <h2>토스증권 계좌 연결</h2>
+    <p class="hint">토스증권 Open API 개발자센터에서 발급받은 앱키/시크릿을 입력하세요.<br>서버 메모리에만 보관되며 파일로 저장하지 않습니다.</p>
+    <div id="loginError"></div>
+    <label for="appKey">앱키 (App Key)</label>
+    <input id="appKey" type="password" autocomplete="off" spellcheck="false">
+    <label for="appSecret">시크릿 (App Secret)</label>
+    <input id="appSecret" type="password" autocomplete="off" spellcheck="false">
+    <button id="loginBtn">로그인</button>
+  </div>
+
+  <div id="connectedView">
+    <div class="status">
+      <h2>연결됨</h2>
+      <ul id="accountList"></ul>
+    </div>
+  </div>
+</main>
+
+<script>
+const loginCard = document.getElementById('loginCard');
+const connectedView = document.getElementById('connectedView');
+const logoutBtn = document.getElementById('logoutBtn');
+const loginBtn = document.getElementById('loginBtn');
+const loginError = document.getElementById('loginError');
+const appKeyInput = document.getElementById('appKey');
+const appSecretInput = document.getElementById('appSecret');
+const accountList = document.getElementById('accountList');
+
+function showError(msg) {
+  loginError.textContent = msg;
+  loginError.style.display = 'block';
+}
+
+function showLoggedIn() {
+  loginCard.style.display = 'none';
+  connectedView.style.display = 'block';
+  logoutBtn.style.display = 'inline-block';
+}
+
+function showLoggedOut() {
+  loginCard.style.display = 'block';
+  connectedView.style.display = 'none';
+  logoutBtn.style.display = 'none';
+}
+
+async function loadAccounts() {
+  const res = await fetch('/api/accounts');
+  if (!res.ok) {
+    showLoggedOut();
+    return;
+  }
+  const data = await res.json();
+  accountList.innerHTML = '';
+  (data.accounts || []).forEach(acc => {
+    const li = document.createElement('li');
+    li.innerHTML = `계좌 <code>${JSON.stringify(acc)}</code>`;
+    accountList.appendChild(li);
+  });
+  if (!data.accounts || data.accounts.length === 0) {
+    accountList.innerHTML = '<li>연결은 되었지만 조회된 계좌가 없습니다.</li>';
+  }
+}
+
+async function checkSession() {
+  const res = await fetch('/api/session');
+  const data = await res.json();
+  if (data.logged_in) {
+    showLoggedIn();
+    await loadAccounts();
+  } else {
+    showLoggedOut();
+  }
+}
+
+loginBtn.addEventListener('click', async () => {
+  loginError.style.display = 'none';
+  const app_key = appKeyInput.value.trim();
+  const app_secret = appSecretInput.value.trim();
+  if (!app_key || !app_secret) {
+    showError('앱키와 시크릿을 모두 입력하세요.');
+    return;
+  }
+  loginBtn.disabled = true;
+  loginBtn.textContent = '연결 중...';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_key, app_secret }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || '로그인에 실패했습니다.');
+      return;
+    }
+    appKeyInput.value = '';
+    appSecretInput.value = '';
+    showLoggedIn();
+    await loadAccounts();
+  } catch (e) {
+    showError('서버에 연결할 수 없습니다.');
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = '로그인';
+  }
+});
+
+logoutBtn.addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  showLoggedOut();
+});
+
+appSecretInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loginBtn.click();
+});
+
+checkSession();
+</script>
 </body>
 </html>
