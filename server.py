@@ -39,6 +39,9 @@ BASE_DIR = Path(__file__).resolve().parent
 DASHBOARD_HTML = BASE_DIR / "dashboard.html"
 CASH_SYMBOLS_FILE = BASE_DIR / "cash_symbols.json"
 CASH_SYMBOLS_MAX = 30
+REBALANCE_CONFIG_FILE = BASE_DIR / "rebalance.json"
+REBALANCE_REST_LABEL = "나머지"
+REBALANCE_CASH_LABEL = "현금"  # "나머지" 버킷에 예수금/현금 취급 종목만 있을 때 쓰는 표시 이름 (real/과 동일한 관례)
 
 # 세션 저장소: 메모리에만 유지, 디스크 기록 없음.
 # { session_id: {"app_key", "app_secret", "token", "issued_at", "last_seen"} }
@@ -124,6 +127,65 @@ def save_cash_symbols(symbols: list[str]) -> None:
         tmp.replace(CASH_SYMBOLS_FILE)
 
 
+def load_rebalance_config() -> dict:
+    """리밸런싱 목표 설정을 읽는다. 파일이 없거나 깨졌으면 기본값(카테고리 없음, 전부 나머지 100%)으로 취급한다.
+    (지금은 파일을 직접 편집해서 설정 - 웹 편집 UI는 다음 단계)"""
+    default = {"targets": [], "rest_pct": 100.0}
+    try:
+        data = json.loads(REBALANCE_CONFIG_FILE.read_text(encoding="utf-8"))
+        clean_targets = []
+        for t in data.get("targets", []):
+            if not isinstance(t, dict):
+                continue
+            label = str(t.get("label", "")).strip()
+            symbols = [s.strip().upper() for s in t.get("symbols", []) if isinstance(s, str) and s.strip()]
+            if label and symbols:
+                clean_targets.append({"label": label, "symbols": symbols, "target_pct": to_float(t.get("target_pct"))})
+        return {"targets": clean_targets, "rest_pct": to_float(data.get("rest_pct"), default["rest_pct"])}
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+        return default
+
+
+def compute_rebalance(
+    all_rows: list[dict], cash_krw_total: float, cash_symbols: set[str], total_eval: float, config: dict
+) -> list[dict]:
+    """카테고리별 현재%/목표%를 계산한다. 목표에 없는 나머지 종목+예수금은 "나머지"(전부 현금성이면 "현금") 버킷으로."""
+    matched_symbols: set[str] = set()
+    result = []
+    for t in config["targets"]:
+        amount = sum(r["평가금액(원)"] for r in all_rows if r["심볼"] in t["symbols"])
+        matched_symbols.update(t["symbols"])
+        result.append(
+            {
+                "label": t["label"],
+                "current_pct": (amount / total_eval * 100) if total_eval else 0.0,
+                "target_pct": t["target_pct"],
+            }
+        )
+
+    rest_rows = [r for r in all_rows if r["심볼"] not in matched_symbols]
+    rest_amount = sum(r["평가금액(원)"] for r in rest_rows) + cash_krw_total
+    rest_label = REBALANCE_CASH_LABEL if all(r["심볼"] in cash_symbols for r in rest_rows) else REBALANCE_REST_LABEL
+    result.append(
+        {
+            "label": rest_label,
+            "current_pct": (rest_amount / total_eval * 100) if total_eval else 0.0,
+            "target_pct": config["rest_pct"],
+        }
+    )
+    return result
+
+
+def compute_currency_split(all_rows: list[dict], cash_krw_amt: float, cash_usd_amt: float, usd_krw: float, total_eval: float) -> dict:
+    """전체 자산 중 원화/달러 통화 비중 (예수금 포함)."""
+    krw_amount = cash_krw_amt + sum(r["평가금액(원)"] for r in all_rows if r["통화"] == "KRW")
+    usd_amount = cash_usd_amt * usd_krw + sum(r["평가금액(원)"] for r in all_rows if r["통화"] == "USD")
+    return {
+        "krw_pct": (krw_amount / total_eval * 100) if total_eval else 0.0,
+        "usd_pct": (usd_amount / total_eval * 100) if total_eval else 0.0,
+    }
+
+
 def fetch_holdings_data(token: str, accounts: list[dict]) -> dict:
     """계좌 전체의 보유종목 + 예수금 + 총계를 계산한다. real/portfolio.py의 fetch_rows/totals_of와 같은 방식."""
     usd_krw = get_usd_krw_rate(token)
@@ -183,6 +245,10 @@ def fetch_holdings_data(token: str, accounts: list[dict]) -> dict:
     total_cost = total_eval - total_pl
     total_rate = (total_pl / total_cost * 100) if total_cost else 0.0
 
+    rebalance_config = load_rebalance_config()
+    rebalance = compute_rebalance(rows, cash_krw_total, cash_symbols, total_eval, rebalance_config)
+    currency_split = compute_currency_split(rows, cash_krw_amt, cash_usd_amt, usd_krw, total_eval)
+
     return {
         "stocks": stock_rows,
         "cash": {
@@ -197,6 +263,8 @@ def fetch_holdings_data(token: str, accounts: list[dict]) -> dict:
             "profit_loss_krw": total_pl,
             "rate_pct": total_rate,
         },
+        "rebalance": rebalance,
+        "currency_split": currency_split,
     }
 
 

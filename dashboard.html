@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>토스증권 포트폴리오 대시보드</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 <style>
   :root {
     --bg: #0d1117;
@@ -128,6 +130,13 @@
   #summaryCards .stat .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
   #summaryCards .stat .value { font-size: 18px; font-weight: 700; }
 
+  #chartsRow { display: flex; gap: 24px; flex-wrap: wrap; }
+  .chart-box { flex: 1 1 260px; min-width: 240px; }
+  .chart-box h2 { text-align: center; }
+  .chart-box canvas { max-height: 260px; }
+  .chart-note { color: var(--muted); font-size: 12px; margin: 14px 0 0; text-align: center; }
+  .chart-note code { color: var(--text); }
+
   .profit { color: var(--profit); }
   .loss { color: var(--danger); }
 
@@ -184,6 +193,20 @@
       <div class="stat"><div class="label">총 평가금액 (예수금 포함)</div><div class="value" id="totalEval">-</div></div>
       <div class="stat"><div class="label">총 손익</div><div class="value" id="totalPl">-</div></div>
       <div class="stat"><div class="label">총 수익률</div><div class="value" id="totalRate">-</div></div>
+    </div>
+
+    <div class="card">
+      <div id="chartsRow">
+        <div class="chart-box">
+          <h2>리밸런싱 구성</h2>
+          <canvas id="allocChart"></canvas>
+        </div>
+        <div class="chart-box">
+          <h2>원/달러 비율</h2>
+          <canvas id="currencyChart"></canvas>
+        </div>
+      </div>
+      <p class="chart-note">리밸런싱 목표는 아직 화면에서 편집할 수 없습니다 — <code>rebalance.json</code>을 직접 만들어 설정하세요 (다음 단계에서 편집 UI 추가 예정).</p>
     </div>
 
     <div class="card">
@@ -305,6 +328,101 @@ function renderStockRows(tbody, rows) {
 // 해외 종목 표: 원/$ 토글에 따라 평가금액·손익 컬럼 값을 바꿔서 보여준다(재조회 없이 캐시된 데이터로 다시 그림).
 let usCurrencyMode = 'krw';   // 'krw' | 'usd'
 let lastUsStocks = [];
+
+// ---------- 리밸런싱 도넛 / 원-달러 비율 도넛 ----------
+// dataviz 스킬의 검증된 다크모드 카테고리 팔레트 (real/dashboard.html과 동일한 값 재사용).
+const CAT_PALETTE = [
+  '#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767',
+  '#76589d', '#8f5d04', '#0c71a0',
+];
+const REST_COLOR = '#898781'; // "나머지"/"현금"처럼 실제 카테고리가 아닌 항목용 중립색
+let allocChart, currencyChart;
+let lastRebalance = [];
+
+function categoryColor(label, index) {
+  return (label === '나머지' || label === '현금') ? REST_COLOR : CAT_PALETTE[index % CAT_PALETTE.length];
+}
+
+function renderAllocChart(rebalance) {
+  lastRebalance = rebalance;
+  const shown = rebalance.filter(r => r.current_pct > 0.01); // 아직 투자 안 한(0%) 카테고리는 도넛엔서 빼고 범례에만 남김
+  const labels = shown.map(r => r.label);
+  const colors = shown.map((r, i) => categoryColor(r.label, rebalance.indexOf(r)));
+  const values = shown.map(r => r.current_pct);
+
+  if (!allocChart) {
+    allocChart = new Chart(document.getElementById('allocChart'), {
+      type: 'doughnut',
+      data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+      plugins: [ChartDataLabels],
+      options: {
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#e6edf3', boxWidth: 12, generateLabels: allocLegendLabels } },
+          datalabels: {
+            color: '#0d1117',
+            font: { weight: 'bold', size: 11 },
+            formatter: v => (v >= 1 ? v.toFixed(1) + '%' : ''),
+          },
+        },
+      },
+    });
+  } else {
+    allocChart.data.labels = labels;
+    allocChart.data.datasets[0].data = values;
+    allocChart.data.datasets[0].backgroundColor = colors;
+    allocChart.update();
+  }
+}
+
+// 범례: "분류  현재% / 목표%". 현재 0%(도넛에 없음)인 카테고리는 회색으로 범례에만 추가.
+function allocLegendLabels(chart) {
+  const fmt = v => (Math.round(v * 10) / 10) + '%';
+  const byLabel = Object.fromEntries(lastRebalance.map(r => [r.label, r]));
+  const base = Chart.overrides.doughnut.plugins.legend.labels.generateLabels(chart);
+  const shownLabels = new Set(base.map(it => it.text));
+  base.forEach(it => {
+    const r = byLabel[it.text];
+    if (r) it.text = `${it.text}  ${fmt(r.current_pct)} / ${fmt(r.target_pct)}`;
+  });
+  const extras = lastRebalance
+    .filter(r => !shownLabels.has(r.label) && r.target_pct > 0)
+    .map((r) => ({
+      text: `${r.label}  0% / ${fmt(r.target_pct)}`,
+      fillStyle: categoryColor(r.label, lastRebalance.indexOf(r)),
+      strokeStyle: categoryColor(r.label, lastRebalance.indexOf(r)),
+      fontColor: '#8b949e',
+      hidden: false,
+    }));
+  return base.concat(extras);
+}
+
+function renderCurrencyChart(split) {
+  const labels = [`원화 ${split.krw_pct.toFixed(1)}%`, `달러 ${split.usd_pct.toFixed(1)}%`];
+  const values = [split.krw_pct, split.usd_pct];
+  const colors = ['#3987e5', '#199e70'];
+
+  if (!currencyChart) {
+    currencyChart = new Chart(document.getElementById('currencyChart'), {
+      type: 'doughnut',
+      data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+      plugins: [ChartDataLabels],
+      options: {
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#e6edf3', boxWidth: 12 } },
+          datalabels: {
+            color: '#0d1117',
+            font: { weight: 'bold', size: 11 },
+            formatter: v => (v >= 1 ? v.toFixed(1) + '%' : ''),
+          },
+        },
+      },
+    });
+  } else {
+    currencyChart.data.labels = labels;
+    currencyChart.data.datasets[0].data = values;
+    currencyChart.update();
+  }
+}
 
 function renderUsRows(rows, mode) {
   lastUsStocks = rows;
@@ -459,6 +577,8 @@ async function loadHoldings() {
   renderStockRows(krRows, krStocks);
   renderUsRows(usStocks, usCurrencyMode);
   renderCashTable(data.cash);
+  renderAllocChart(data.rebalance);
+  renderCurrencyChart(data.currency_split);
 
   totalEvalEl.textContent = fmtWon(data.totals.eval_krw);
   totalPlEl.textContent = fmtWon(data.totals.profit_loss_krw);
