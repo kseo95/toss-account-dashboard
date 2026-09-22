@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import sys
 import threading
@@ -42,12 +43,17 @@ CASH_SYMBOLS_MAX = 30
 REBALANCE_CONFIG_FILE = BASE_DIR / "rebalance.json"
 REBALANCE_REST_LABEL = "나머지"
 REBALANCE_CASH_LABEL = "현금"  # "나머지" 버킷에 예수금/현금 취급 종목만 있을 때 쓰는 표시 이름 (real/과 동일한 관례)
+REBALANCE_RESERVED_LABELS = {REBALANCE_REST_LABEL, REBALANCE_CASH_LABEL}
+REBALANCE_MAX_CATEGORIES = 30
+REBALANCE_MAX_SYMBOLS_PER_CATEGORY = 20
+SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9.\-]{1,10}$")
 
 # 세션 저장소: 메모리에만 유지, 디스크 기록 없음.
 # { session_id: {"app_key", "app_secret", "token", "issued_at", "last_seen"} }
 _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
 _cash_symbols_lock = threading.Lock()  # cash_symbols.json 동시 수정 방지
+_rebalance_lock = threading.Lock()  # rebalance.json 동시 수정 방지
 
 
 def get_access_token(app_key: str, app_secret: str) -> str:
@@ -103,6 +109,14 @@ def get_buying_power(token: str, account_seq: str, currency: str) -> float:
     return to_float(data.get("cashBuyingPower"))
 
 
+def get_stock_info(token: str, symbols: list[str]) -> dict[str, dict]:
+    """심볼 목록의 기본정보(이름/시장 등)를 조회. 리밸런싱 목표 저장 시 존재하는 종목인지 검증하는 용도."""
+    if not symbols:
+        return {}
+    result = api_get("/api/v1/stocks", token, params={"symbols": ",".join(symbols)}).get("result", [])
+    return {item["symbol"]: item for item in result}
+
+
 def to_float(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -128,9 +142,8 @@ def save_cash_symbols(symbols: list[str]) -> None:
 
 
 def load_rebalance_config() -> dict:
-    """리밸런싱 목표 설정을 읽는다. 파일이 없거나 깨졌으면 기본값(카테고리 없음, 전부 나머지 100%)으로 취급한다.
-    (지금은 파일을 직접 편집해서 설정 - 웹 편집 UI는 다음 단계)"""
-    default = {"targets": [], "rest_pct": 100.0}
+    """리밸런싱 목표 설정을 읽는다. 파일이 없거나 깨졌으면 기본값(카테고리 없음, 미분류 종목은 각각 5%)으로 취급한다."""
+    default = {"targets": [], "default_rest_target_pct": 5.0}
     try:
         data = json.loads(REBALANCE_CONFIG_FILE.read_text(encoding="utf-8"))
         clean_targets = []
@@ -141,15 +154,85 @@ def load_rebalance_config() -> dict:
             symbols = [s.strip().upper() for s in t.get("symbols", []) if isinstance(s, str) and s.strip()]
             if label and symbols:
                 clean_targets.append({"label": label, "symbols": symbols, "target_pct": to_float(t.get("target_pct"))})
-        return {"targets": clean_targets, "rest_pct": to_float(data.get("rest_pct"), default["rest_pct"])}
+        return {
+            "targets": clean_targets,
+            "default_rest_target_pct": to_float(data.get("default_rest_target_pct"), default["default_rest_target_pct"]),
+        }
     except (FileNotFoundError, json.JSONDecodeError, AttributeError):
         return default
+
+
+def validate_rebalance_targets(targets) -> tuple[list[dict], str | None]:
+    """카테고리 목록을 검증/정규화한다. (targets, None)이면 통과, (빈 목록, 에러메시지)면 실패."""
+    if not isinstance(targets, list):
+        return [], "targets는 배열이어야 합니다."
+    if len(targets) > REBALANCE_MAX_CATEGORIES:
+        return [], f"카테고리는 최대 {REBALANCE_MAX_CATEGORIES}개까지 만들 수 있습니다."
+
+    clean: list[dict] = []
+    seen_labels: set[str] = set()
+    seen_symbols: dict[str, str] = {}  # symbol -> 그 symbol을 먼저 쓴 카테고리 label (중복 검출용)
+
+    for t in targets:
+        if not isinstance(t, dict):
+            return [], "카테고리 형식이 올바르지 않습니다."
+
+        label = str(t.get("label", "")).strip()
+        if not (1 <= len(label) <= 30):
+            return [], "카테고리 이름은 1~30자여야 합니다."
+        if label in REBALANCE_RESERVED_LABELS:
+            return [], f'"{label}"은(는) 예약된 이름이라 카테고리 이름으로 쓸 수 없습니다.'
+        if label in seen_labels:
+            return [], f'카테고리 이름이 중복됩니다: "{label}"'
+        seen_labels.add(label)
+
+        raw_symbols = t.get("symbols", [])
+        if not isinstance(raw_symbols, list) or not raw_symbols:
+            return [], f'"{label}" 카테고리에 종목을 하나 이상 넣어야 합니다.'
+        if len(raw_symbols) > REBALANCE_MAX_SYMBOLS_PER_CATEGORY:
+            return [], f'"{label}" 카테고리에는 종목을 최대 {REBALANCE_MAX_SYMBOLS_PER_CATEGORY}개까지 넣을 수 있습니다.'
+
+        symbols: list[str] = []
+        for s in raw_symbols:
+            if not isinstance(s, str):
+                return [], "종목 코드는 문자열이어야 합니다."
+            sym = s.strip().upper()
+            if not SYMBOL_PATTERN.match(sym):
+                return [], f"잘못된 종목 코드입니다: {s!r}"
+            if sym in seen_symbols:
+                return [], f'같은 종목을 두 카테고리에 넣을 수 없습니다: {sym} ("{seen_symbols[sym]}"와(과) "{label}")'
+            seen_symbols[sym] = label
+            if sym not in symbols:
+                symbols.append(sym)
+
+        target_pct = to_float(t.get("target_pct"), -1)
+        if not (0 <= target_pct <= 100):
+            return [], f'"{label}"의 목표%는 0~100 사이 숫자여야 합니다.'
+
+        clean.append({"label": label, "symbols": symbols, "target_pct": target_pct})
+
+    return clean, None
+
+
+def save_rebalance_config(targets: list[dict], default_rest_target_pct: float) -> None:
+    with _rebalance_lock:
+        tmp = REBALANCE_CONFIG_FILE.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(
+                {"targets": targets, "default_rest_target_pct": default_rest_target_pct},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        tmp.replace(REBALANCE_CONFIG_FILE)
 
 
 def compute_rebalance(
     all_rows: list[dict], cash_krw_total: float, cash_symbols: set[str], total_eval: float, config: dict
 ) -> list[dict]:
-    """카테고리별 현재%/목표%를 계산한다. 목표에 없는 나머지 종목+예수금은 "나머지"(전부 현금성이면 "현금") 버킷으로."""
+    """카테고리별 현재%/목표%를 계산한다. 목표 카테고리에 없는 종목/예수금은 하나로 합치지 않고 각각
+    개별 항목으로 만들되, 목표%는 전부 config["default_rest_target_pct"](기본 5%)로 고정한다."""
     matched_symbols: set[str] = set()
     result = []
     for t in config["targets"]:
@@ -163,17 +246,37 @@ def compute_rebalance(
             }
         )
 
-    rest_rows = [r for r in all_rows if r["심볼"] not in matched_symbols]
-    rest_amount = sum(r["평가금액(원)"] for r in rest_rows) + cash_krw_total
-    rest_label = REBALANCE_CASH_LABEL if all(r["심볼"] in cash_symbols for r in rest_rows) else REBALANCE_REST_LABEL
-    result.append(
-        {
-            "label": rest_label,
-            "current_pct": (rest_amount / total_eval * 100) if total_eval else 0.0,
-            "target_pct": config["rest_pct"],
-        }
-    )
-    return result
+    default_pct = config["default_rest_target_pct"]
+    for r in all_rows:
+        if r["심볼"] in matched_symbols:
+            continue
+        # 현금 취급 종목(SGOV 등)은 "현금" 표에 이미 따로 보이니 여기서는 이름 대신 "현금" 라벨을 쓴다.
+        label = REBALANCE_CASH_LABEL if r["심볼"] in cash_symbols else r["종목"]
+        result.append(
+            {
+                "label": label,
+                "current_pct": (r["평가금액(원)"] / total_eval * 100) if total_eval else 0.0,
+                "target_pct": default_pct,
+            }
+        )
+
+    if cash_krw_total > 0:
+        result.append(
+            {
+                "label": REBALANCE_CASH_LABEL,
+                "current_pct": (cash_krw_total / total_eval * 100) if total_eval else 0.0,
+                "target_pct": default_pct,
+            }
+        )
+
+    # 여러 항목이 "현금" 라벨을 가질 수 있으므로(예수금 + 현금 취급 종목들) 하나로 합친다.
+    merged: dict[str, dict] = {}
+    for r in result:
+        if r["label"] in merged:
+            merged[r["label"]]["current_pct"] += r["current_pct"]
+        else:
+            merged[r["label"]] = dict(r)
+    return list(merged.values())
 
 
 def compute_currency_split(all_rows: list[dict], cash_krw_amt: float, cash_usd_amt: float, usd_krw: float, total_eval: float) -> dict:
@@ -398,6 +501,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"symbols": load_cash_symbols()})
             return
 
+        if path == "/api/rebalance-config":
+            session = _get_session(self)
+            if not session:
+                return self._send_json(401, {"error": "로그인이 필요합니다."})
+            self._send_json(200, load_rebalance_config())
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -471,6 +581,42 @@ class Handler(BaseHTTPRequestHandler):
 
             save_cash_symbols(symbols)
             return self._send_json(200, {"ok": True, "symbols": symbols})
+
+        if path == "/api/rebalance-config":
+            session = _get_session(self)
+            if not session:
+                return self._send_json(401, {"error": "로그인이 필요합니다."})
+            try:
+                data = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._send_json(400, {"error": "잘못된 요청입니다."})
+
+            targets, error = validate_rebalance_targets(data.get("targets"))
+            if error:
+                return self._send_json(400, {"error": error})
+
+            default_rest_target_pct = to_float(data.get("default_rest_target_pct"), -1)
+            if not (0 <= default_rest_target_pct <= 100):
+                return self._send_json(400, {"error": "미분류 종목 기본 목표%는 0~100 사이 숫자여야 합니다."})
+
+            # 새로 목표에 넣은 종목이 실제 존재하는지 토스 API로 확인 (real/의 관례와 동일)
+            all_symbols = sorted({s for t in targets for s in t["symbols"]})
+            if all_symbols:
+                try:
+                    info = call_with_reauth(session, lambda token: get_stock_info(token, all_symbols))
+                except requests.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else 502
+                    return self._send_json(status, {"error": f"토스 API 오류 ({status})"})
+                except requests.RequestException:
+                    return self._send_json(502, {"error": "토스 API에 연결할 수 없습니다."})
+                missing = [s for s in all_symbols if s not in info]
+                if missing:
+                    return self._send_json(400, {"error": f"존재하지 않는 종목 코드입니다: {', '.join(missing)}"})
+
+            save_rebalance_config(targets, default_rest_target_pct)
+            return self._send_json(
+                200, {"ok": True, "targets": targets, "default_rest_target_pct": default_rest_target_pct}
+            )
 
         if path == "/api/logout":
             sid = _session_id_from_cookie(self)

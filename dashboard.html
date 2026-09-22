@@ -130,12 +130,24 @@
   #summaryCards .stat .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
   #summaryCards .stat .value { font-size: 18px; font-weight: 700; }
 
-  #chartsRow { display: flex; gap: 24px; flex-wrap: wrap; }
-  .chart-box { flex: 1 1 260px; min-width: 240px; }
-  .chart-box h2 { text-align: center; }
-  .chart-box canvas { max-height: 260px; }
-  .chart-note { color: var(--muted); font-size: 12px; margin: 14px 0 0; text-align: center; }
-  .chart-note code { color: var(--text); }
+  #chartsRow { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .chart-card { flex: 1 1 300px; min-width: 260px; margin-bottom: 0; }
+  .chart-card h2 { text-align: center; }
+  .chart-wrap { position: relative; height: 260px; } /* 두 차트가 항상 같은 크기로 그려지도록 고정 높이 */
+  .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+  .chart-legend {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 14px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .chart-legend li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .chart-legend .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
   .profit { color: var(--profit); }
   .loss { color: var(--danger); }
@@ -168,6 +180,46 @@
   }
   #saveCashSymbolsBtn:disabled { opacity: 0.6; cursor: default; }
   #cashSymbolsSaved { color: var(--muted); font-size: 12px; margin-left: 10px; display: none; }
+
+  .rb-category-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr 80px auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 0;
+  }
+  .rb-category-row input {
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    width: 100%;
+  }
+  .rb-category-row input:focus { outline: none; border-color: var(--accent); }
+  .rb-category-row button.rb-remove {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 5px; padding: 4px 8px; font-size: 11px; cursor: pointer;
+  }
+  .rb-category-row button.rb-remove:hover { color: var(--danger); border-color: var(--danger); }
+  .rb-add {
+    margin-top: 8px; background: transparent; border: 1px dashed var(--border); color: var(--muted);
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; width: 100%;
+  }
+  .rb-add:hover { color: var(--text); border-color: var(--muted); }
+  .rb-rest-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .rb-rest-row input { width: 80px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+  .rb-sum { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .rb-sum.warn { color: var(--danger); }
+  .rb-error { display: none; color: var(--danger); font-size: 12px; margin-bottom: 8px; }
+  .rb-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .rb-actions button { padding: 7px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  #saveRebalanceBtn { background: var(--accent); color: #fff; border: none; }
+  #saveRebalanceBtn:disabled { opacity: 0.6; cursor: default; }
+  #resetRebalanceBtn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  #resetRebalanceBtn:hover { color: var(--text); border-color: var(--muted); }
+  #rebalanceSaved { color: var(--muted); font-size: 12px; display: none; }
 </style>
 </head>
 <body>
@@ -195,18 +247,34 @@
       <div class="stat"><div class="label">총 수익률</div><div class="value" id="totalRate">-</div></div>
     </div>
 
-    <div class="card">
-      <div id="chartsRow">
-        <div class="chart-box">
-          <h2>리밸런싱 구성</h2>
-          <canvas id="allocChart"></canvas>
-        </div>
-        <div class="chart-box">
-          <h2>원/달러 비율</h2>
-          <canvas id="currencyChart"></canvas>
-        </div>
+    <div id="chartsRow">
+      <div class="card chart-card">
+        <h2>보유 비중</h2>
+        <div class="chart-wrap"><canvas id="allocChart"></canvas></div>
+        <ul class="chart-legend" id="allocLegend"></ul>
+
+        <details class="settings">
+          <summary>리밸런싱 목표 설정</summary>
+          <div id="rebalanceError" class="rb-error"></div>
+          <div id="rebalanceCategories"></div>
+          <button id="addCategoryBtn" type="button" class="rb-add">+ 카테고리 추가</button>
+          <div class="rb-rest-row">
+            <label for="restPctInput">미분류 종목 기본 목표%(각각)</label>
+            <input id="restPctInput" type="number" min="0" max="100" step="0.1">
+          </div>
+          <div id="rebalanceSum" class="rb-sum"></div>
+          <div class="rb-actions">
+            <button id="saveRebalanceBtn">저장</button>
+            <button id="resetRebalanceBtn" type="button">되돌리기</button>
+            <span id="rebalanceSaved">저장됨</span>
+          </div>
+        </details>
       </div>
-      <p class="chart-note">리밸런싱 목표는 아직 화면에서 편집할 수 없습니다 — <code>rebalance.json</code>을 직접 만들어 설정하세요 (다음 단계에서 편집 UI 추가 예정).</p>
+      <div class="card chart-card">
+        <h2>원/달러 비율</h2>
+        <div class="chart-wrap"><canvas id="currencyChart"></canvas></div>
+        <ul class="chart-legend" id="currencyLegend"></ul>
+      </div>
     </div>
 
     <div class="card">
@@ -329,42 +397,62 @@ function renderStockRows(tbody, rows) {
 let usCurrencyMode = 'krw';   // 'krw' | 'usd'
 let lastUsStocks = [];
 
-// ---------- 리밸런싱 도넛 / 원-달러 비율 도넛 ----------
+// ---------- 보유 비중 도넛 / 원-달러 비율 도넛 ----------
 // dataviz 스킬의 검증된 다크모드 카테고리 팔레트 (real/dashboard.html과 동일한 값 재사용).
 const CAT_PALETTE = [
   '#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767',
   '#76589d', '#8f5d04', '#0c71a0',
 ];
-const REST_COLOR = '#898781'; // "나머지"/"현금"처럼 실제 카테고리가 아닌 항목용 중립색
+const CASH_COLOR = '#898781'; // "현금"은 실제 종목이 아니라서 중립색
 let allocChart, currencyChart;
-let lastRebalance = [];
 
-function categoryColor(label, index) {
-  return (label === '나머지' || label === '현금') ? REST_COLOR : CAT_PALETTE[index % CAT_PALETTE.length];
+// legend는 Chart.js 내장 걸 안 쓰고 도넛 아래에 직접 그린다 - 내장 legend를 켜면 항목 개수(범례 폭)에 따라
+// 도넛 자체 크기가 달라져서(legend가 넓을수록 도넛이 작아짐), 종목이 많은 "보유 비중"과 항목 2개뿐인
+// "원/달러 비율"의 도넛 크기가 서로 달라 보였다. legend를 캔버스 밖 HTML로 빼면 도넛은 항상 .chart-wrap
+// 크기 그대로 그려진다.
+function renderLegendList(elId, labels, values, colors) {
+  const el = document.getElementById(elId);
+  el.innerHTML = labels
+    .map((label, i) => `<li><span class="dot" style="background:${colors[i]}"></span>${label} ${(Math.round(values[i] * 10) / 10)}%</li>`)
+    .join('');
+}
+
+// 도넛차트 공통 옵션 (real/dashboard.html의 datalabel 폰트/색과 같은 양식, legend는 위 커스텀 목록으로 대체).
+function donutOptions() {
+  return {
+    maintainAspectRatio: false, // .chart-wrap의 고정 높이를 그대로 채워서 두 차트가 항상 같은 크기로 보이게 함
+    plugins: {
+      legend: { display: false },
+      datalabels: {
+        color: '#0d1117',
+        font: { weight: 'bold', size: 12 },
+        formatter: v => (v >= 1 ? v.toFixed(1) + '%' : ''),
+      },
+    },
+  };
+}
+
+// 리밸런싱 목표 카테고리별 현재%/목표%. 카테고리로 안 묶인 종목+예수금은 "나머지"(전부 현금성이면 "현금")로
+// 뭉쳐서 표시됨(개별로 보고 싶으면 종목 하나짜리 카테고리를 만들면 됨) - real/과 동일한 방식.
+function categoryColorFor(rebalance, label) {
+  if (label === '나머지' || label === '현금') return CASH_COLOR;
+  const nonCash = rebalance.filter(r => r.label !== '나머지' && r.label !== '현금');
+  const idx = nonCash.findIndex(r => r.label === label);
+  return CAT_PALETTE[idx % CAT_PALETTE.length];
 }
 
 function renderAllocChart(rebalance) {
-  lastRebalance = rebalance;
-  const shown = rebalance.filter(r => r.current_pct > 0.01); // 아직 투자 안 한(0%) 카테고리는 도넛엔서 빼고 범례에만 남김
+  const shown = rebalance.filter(r => r.current_pct > 0.01); // 아직 안 산(0%) 카테고리는 도넛엔 안 나오고 범례에만 남김
   const labels = shown.map(r => r.label);
-  const colors = shown.map((r, i) => categoryColor(r.label, rebalance.indexOf(r)));
   const values = shown.map(r => r.current_pct);
+  const colors = shown.map(r => categoryColorFor(rebalance, r.label));
 
   if (!allocChart) {
     allocChart = new Chart(document.getElementById('allocChart'), {
       type: 'doughnut',
       data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
       plugins: [ChartDataLabels],
-      options: {
-        plugins: {
-          legend: { position: 'bottom', labels: { color: '#e6edf3', boxWidth: 12, generateLabels: allocLegendLabels } },
-          datalabels: {
-            color: '#0d1117',
-            font: { weight: 'bold', size: 11 },
-            formatter: v => (v >= 1 ? v.toFixed(1) + '%' : ''),
-          },
-        },
-      },
+      options: donutOptions(),
     });
   } else {
     allocChart.data.labels = labels;
@@ -372,32 +460,19 @@ function renderAllocChart(rebalance) {
     allocChart.data.datasets[0].backgroundColor = colors;
     allocChart.update();
   }
-}
 
-// 범례: "분류  현재% / 목표%". 현재 0%(도넛에 없음)인 카테고리는 회색으로 범례에만 추가.
-function allocLegendLabels(chart) {
+  // 범례는 0% 카테고리도 포함해서 전부 보여주고 "현재% / 목표%"로 표기.
   const fmt = v => (Math.round(v * 10) / 10) + '%';
-  const byLabel = Object.fromEntries(lastRebalance.map(r => [r.label, r]));
-  const base = Chart.overrides.doughnut.plugins.legend.labels.generateLabels(chart);
-  const shownLabels = new Set(base.map(it => it.text));
-  base.forEach(it => {
-    const r = byLabel[it.text];
-    if (r) it.text = `${it.text}  ${fmt(r.current_pct)} / ${fmt(r.target_pct)}`;
-  });
-  const extras = lastRebalance
-    .filter(r => !shownLabels.has(r.label) && r.target_pct > 0)
-    .map((r) => ({
-      text: `${r.label}  0% / ${fmt(r.target_pct)}`,
-      fillStyle: categoryColor(r.label, lastRebalance.indexOf(r)),
-      strokeStyle: categoryColor(r.label, lastRebalance.indexOf(r)),
-      fontColor: '#8b949e',
-      hidden: false,
-    }));
-  return base.concat(extras);
+  const legendEl = document.getElementById('allocLegend');
+  legendEl.innerHTML = rebalance
+    .slice()
+    .sort((a, b) => b.current_pct - a.current_pct)
+    .map(r => `<li><span class="dot" style="background:${categoryColorFor(rebalance, r.label)}"></span>${r.label} ${fmt(r.current_pct)} / ${fmt(r.target_pct)}</li>`)
+    .join('');
 }
 
 function renderCurrencyChart(split) {
-  const labels = [`원화 ${split.krw_pct.toFixed(1)}%`, `달러 ${split.usd_pct.toFixed(1)}%`];
+  const labels = ['원화', '달러'];
   const values = [split.krw_pct, split.usd_pct];
   const colors = ['#3987e5', '#199e70'];
 
@@ -406,23 +481,117 @@ function renderCurrencyChart(split) {
       type: 'doughnut',
       data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
       plugins: [ChartDataLabels],
-      options: {
-        plugins: {
-          legend: { position: 'bottom', labels: { color: '#e6edf3', boxWidth: 12 } },
-          datalabels: {
-            color: '#0d1117',
-            font: { weight: 'bold', size: 11 },
-            formatter: v => (v >= 1 ? v.toFixed(1) + '%' : ''),
-          },
-        },
-      },
+      options: donutOptions(),
     });
   } else {
     currencyChart.data.labels = labels;
     currencyChart.data.datasets[0].data = values;
     currencyChart.update();
   }
+  renderLegendList('currencyLegend', labels, values, colors);
 }
+
+// ---------- 리밸런싱 목표 설정 편집 ----------
+// 카테고리로 안 묶인 종목/예수금은 하나로 뭉치지 않고 각각 개별 항목으로 표시되며,
+// 목표%는 전부 이 "기본 목표%"(default_rest_target_pct) 값으로 고정된다.
+let rebalanceDraft = { targets: [], default_rest_target_pct: 5 };
+
+function updateRebalanceSum() {
+  const categorySum = rebalanceDraft.targets.reduce((s, t) => s + (parseFloat(t.target_pct) || 0), 0);
+  const el = document.getElementById('rebalanceSum');
+  el.textContent = `카테고리 목표% 합계: ${Math.round(categorySum * 10) / 10}% (미분류 종목/예수금은 위 "기본 목표%"로 각각 표시됩니다)`;
+  el.classList.remove('warn'); // 미분류 종목 개수가 유동적이라 100% 기준 경고는 의미가 없음
+}
+
+function renderRebalancePanel() {
+  const container = document.getElementById('rebalanceCategories');
+  container.innerHTML = '';
+  rebalanceDraft.targets.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'rb-category-row';
+    const escLabel = (t.label || '').replace(/"/g, '&quot;');
+    row.innerHTML = `
+      <input type="text" placeholder="카테고리 이름" value="${escLabel}" data-field="label">
+      <input type="text" placeholder="종목 코드 (쉼표로 구분, 예: 069500, 114800)" value="${t.symbols.join(', ')}" data-field="symbols">
+      <input type="number" min="0" max="100" step="0.1" value="${t.target_pct}" data-field="target_pct">
+      <button type="button" class="rb-remove">삭제</button>
+    `;
+    row.querySelector('[data-field="label"]').addEventListener('input', e => { rebalanceDraft.targets[i].label = e.target.value; });
+    row.querySelector('[data-field="symbols"]').addEventListener('input', e => {
+      rebalanceDraft.targets[i].symbols = e.target.value.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    });
+    row.querySelector('[data-field="target_pct"]').addEventListener('input', e => {
+      rebalanceDraft.targets[i].target_pct = parseFloat(e.target.value) || 0;
+      updateRebalanceSum();
+    });
+    row.querySelector('.rb-remove').addEventListener('click', () => {
+      rebalanceDraft.targets.splice(i, 1);
+      renderRebalancePanel();
+    });
+    container.appendChild(row);
+  });
+  document.getElementById('restPctInput').value = rebalanceDraft.default_rest_target_pct;
+  updateRebalanceSum();
+}
+
+async function loadRebalanceConfig() {
+  const res = await fetch('/api/rebalance-config');
+  if (!res.ok) return;
+  const data = await res.json();
+  rebalanceDraft = {
+    targets: (data.targets || []).map(t => ({ ...t, symbols: [...t.symbols] })),
+    default_rest_target_pct: data.default_rest_target_pct,
+  };
+  renderRebalancePanel();
+}
+
+document.getElementById('restPctInput').addEventListener('input', updateRebalanceSum);
+
+document.getElementById('addCategoryBtn').addEventListener('click', () => {
+  rebalanceDraft.targets.push({ label: '', symbols: [], target_pct: 0 });
+  renderRebalancePanel();
+});
+
+document.getElementById('resetRebalanceBtn').addEventListener('click', () => {
+  loadRebalanceConfig();
+});
+
+document.getElementById('saveRebalanceBtn').addEventListener('click', async () => {
+  const errEl = document.getElementById('rebalanceError');
+  const savedEl = document.getElementById('rebalanceSaved');
+  const btn = document.getElementById('saveRebalanceBtn');
+  errEl.style.display = 'none';
+  savedEl.style.display = 'none';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/rebalance-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targets: rebalanceDraft.targets,
+        default_rest_target_pct: parseFloat(document.getElementById('restPctInput').value) || 0,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || '저장에 실패했습니다.';
+      errEl.style.display = 'block';
+      return;
+    }
+    rebalanceDraft = {
+      targets: data.targets.map(t => ({ ...t, symbols: [...t.symbols] })),
+      default_rest_target_pct: data.default_rest_target_pct,
+    };
+    renderRebalancePanel();
+    savedEl.style.display = 'inline';
+    await loadHoldings(); // 저장된 목표를 도넛/범례에 바로 반영
+  } catch (e) {
+    errEl.textContent = '서버에 연결할 수 없습니다.';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function renderUsRows(rows, mode) {
   lastUsStocks = rows;
@@ -591,12 +760,16 @@ async function loadHoldings() {
   renderCashSymbolPicker();
 }
 
+async function enterDashboard() {
+  showLoggedIn();
+  await Promise.all([loadHoldings(), loadRebalanceConfig()]);
+}
+
 async function checkSession() {
   const res = await fetch('/api/session');
   const data = await res.json();
   if (data.logged_in) {
-    showLoggedIn();
-    await loadHoldings();
+    await enterDashboard();
   } else {
     showLoggedOut();
   }
@@ -625,8 +798,7 @@ loginBtn.addEventListener('click', async () => {
     }
     appKeyInput.value = '';
     appSecretInput.value = '';
-    showLoggedIn();
-    await loadHoldings();
+    await enterDashboard();
   } catch (e) {
     showError('서버에 연결할 수 없습니다.');
   } finally {
