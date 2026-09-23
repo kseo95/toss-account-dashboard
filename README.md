@@ -28,8 +28,9 @@
 ## 설치 및 실행
 
 ```bash
+git clone https://github.com/kseo95/toss-account-dashboard.git
+cd toss-account-dashboard
 pip3 install requests
-cd /Users/john/Desktop/Portfolio/toss-portfolio/redo
 python3 server.py
 ```
 
