@@ -24,6 +24,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 
@@ -47,6 +48,8 @@ REBALANCE_RESERVED_LABELS = {REBALANCE_REST_LABEL, REBALANCE_CASH_LABEL}
 REBALANCE_MAX_CATEGORIES = 30
 REBALANCE_MAX_SYMBOLS_PER_CATEGORY = 20
 SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9.\-]{1,10}$")
+WATCHLIST_FILE = BASE_DIR / "watchlist.json"
+WATCHLIST_MAX = 30
 
 # 세션 저장소: 메모리에만 유지, 디스크 기록 없음.
 # { session_id: {"app_key", "app_secret", "token", "issued_at", "last_seen"} }
@@ -54,6 +57,7 @@ _sessions: dict[str, dict] = {}
 _lock = threading.Lock()
 _cash_symbols_lock = threading.Lock()  # cash_symbols.json 동시 수정 방지
 _rebalance_lock = threading.Lock()  # rebalance.json 동시 수정 방지
+_watchlist_lock = threading.Lock()  # watchlist.json 동시 수정 방지
 
 
 def get_access_token(app_key: str, app_secret: str) -> str:
@@ -157,6 +161,104 @@ def get_stock_info(token: str, symbols: list[str]) -> dict[str, dict]:
     return {item["symbol"]: item for item in result}
 
 
+def get_prices(token: str, symbols: list[str]) -> dict[str, float]:
+    if not symbols:
+        return {}
+    result = api_get("/api/v1/prices", token, params={"symbols": ",".join(symbols)}).get("result", [])
+    return {item["symbol"]: to_float(item.get("lastPrice")) for item in result}
+
+
+def get_daily_candles(token: str, symbol: str, count: int = 2) -> dict:
+    return api_get("/api/v1/candles", token, params={"symbol": symbol, "interval": "1d", "count": count}).get(
+        "result", {}
+    )
+
+
+_STOCK_INFO_CACHE: dict[str, tuple[float, dict | None]] = {}
+STOCK_INFO_CACHE_TTL = 600.0  # 초. 종목 기본정보는 잘 안 바뀌므로 캐시해서 자동완성이 토스 API 한도(429)를 소진하지 않게 한다.
+
+
+def lookup_stocks(token: str, symbols: list[str], ttl: float = STOCK_INFO_CACHE_TTL) -> dict[str, dict]:
+    """get_stock_info의 캐시 버전. 존재하지 않는 심볼도 결과 없음으로 캐시한다."""
+    now = time.time()
+    need = [s for s in symbols if s not in _STOCK_INFO_CACHE or now - _STOCK_INFO_CACHE[s][0] > ttl]
+    if need:
+        info = get_stock_info(token, need)
+        for s in need:
+            _STOCK_INFO_CACHE[s] = (now, info.get(s))
+    return {s: _STOCK_INFO_CACHE[s][1] for s in symbols if _STOCK_INFO_CACHE[s][1]}
+
+
+def search_stocks(token: str, query: str, limit: int = 8) -> list[dict]:
+    """티커/종목명(한글·영문, 일부만 입력해도 됨)으로 후보를 찾는다.
+    토스 API 자체에는 검색 기능이 없어서, 후보 코드는 네이버 증권 자동완성(비공식)으로 얻고
+    토스 /api/v1/stocks로 실제 거래 가능한(ACTIVE) 종목인지 검증해서 토스 기준 이름/시장/통화를 돌려준다.
+    (real/portfolio.py의 search_stocks와 같은 방식)"""
+    query = query.strip()[:40]
+    if not query:
+        return []
+    candidates: list[str] = []
+    if SYMBOL_PATTERN.fullmatch(query.upper()):
+        candidates.append(query.upper())  # 정확한 티커를 직접 입력한 경우도 후보에 포함
+    try:
+        resp = requests.get(
+            "https://ac.stock.naver.com/ac",
+            params={"q": query, "target": "stock"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        for it in resp.json().get("items", []):
+            code = it.get("code")
+            if code and it.get("nationCode") in ("KOR", "USA") and SYMBOL_PATTERN.fullmatch(code):
+                candidates.append(code)
+    except (requests.exceptions.RequestException, ValueError):
+        pass  # 검색 소스 장애 시에는 정확한 티커 입력만 동작
+    candidates = list(dict.fromkeys(candidates))[:limit]
+    if not candidates:
+        return []
+    info = lookup_stocks(token, candidates)
+    return [
+        {
+            "symbol": sym,
+            "name": info[sym].get("name", sym),
+            "market": info[sym].get("market", ""),
+            "currency": info[sym].get("currency", ""),
+        }
+        for sym in candidates
+        if sym in info and info[sym].get("status") == "ACTIVE"
+    ]
+
+
+def fetch_watchlist_rows(token: str, symbols: list[str]) -> list[dict]:
+    """관심종목의 현재가 + 전일대비 등락률을 조회한다."""
+    if not symbols:
+        return []
+    info = lookup_stocks(token, symbols)
+    prices = get_prices(token, symbols)
+    rows = []
+    for sym in symbols:
+        meta = info.get(sym, {})
+        cur_price = prices.get(sym, 0.0)
+        prev_close = None
+        try:
+            candles = get_daily_candles(token, sym, count=2).get("candles", [])
+            if len(candles) >= 2:
+                prev_close = to_float(candles[1].get("closePrice"))
+        except requests.exceptions.RequestException:
+            pass
+        change_pct = ((cur_price - prev_close) / prev_close * 100) if prev_close else 0.0
+        rows.append(
+            {
+                "symbol": sym,
+                "name": meta.get("name", sym),
+                "currency": meta.get("currency", "?"),
+                "price": cur_price,
+                "change_pct": change_pct,
+            }
+        )
+    return rows
+
+
 def to_float(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -179,6 +281,23 @@ def save_cash_symbols(symbols: list[str]) -> None:
         tmp = CASH_SYMBOLS_FILE.with_suffix(".json.tmp")
         tmp.write_text(json.dumps({"symbols": symbols}, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(CASH_SYMBOLS_FILE)
+
+
+def load_watchlist() -> list[str]:
+    """관심종목 설정을 읽는다. 파일이 없거나 깨졌으면 빈 목록으로 취급한다(직전 상태를 지우지 않음)."""
+    try:
+        data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+        symbols = data.get("symbols", [])
+        return [s for s in symbols if isinstance(s, str) and s]
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+        return []
+
+
+def save_watchlist(symbols: list[str]) -> None:
+    with _watchlist_lock:
+        tmp = WATCHLIST_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"symbols": symbols}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(WATCHLIST_FILE)
 
 
 def load_rebalance_config() -> dict:
@@ -562,6 +681,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, load_rebalance_config())
             return
 
+        if path == "/api/search":
+            session = _get_session(self)
+            if not session:
+                return self._send_json(401, {"error": "로그인이 필요합니다."})
+            query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+            try:
+                results = call_with_reauth(session, lambda token: search_stocks(token, query))
+                self._send_json(200, {"results": results})
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 502
+                self._send_json(status, {"error": f"토스 API 오류 ({status})"})
+            except requests.RequestException:
+                self._send_json(502, {"error": "토스 API에 연결할 수 없습니다."})
+            return
+
+        if path == "/api/watchlist":
+            session = _get_session(self)
+            if not session:
+                return self._send_json(401, {"error": "로그인이 필요합니다."})
+            symbols = load_watchlist()
+            try:
+                items = call_with_reauth(session, lambda token: fetch_watchlist_rows(token, symbols))
+                self._send_json(200, {"items": items})
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 502
+                self._send_json(status, {"error": f"토스 API 오류 ({status})"})
+            except requests.RequestException:
+                self._send_json(502, {"error": "토스 API에 연결할 수 없습니다."})
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -681,6 +830,47 @@ class Handler(BaseHTTPRequestHandler):
                     "krw_target_pct": krw_target_pct,
                 },
             )
+
+        if path == "/api/watchlist":
+            session = _get_session(self)
+            if not session:
+                return self._send_json(401, {"error": "로그인이 필요합니다."})
+            try:
+                data = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._send_json(400, {"error": "잘못된 요청입니다."})
+
+            raw_symbols = data.get("symbols")
+            if not isinstance(raw_symbols, list):
+                return self._send_json(400, {"error": "symbols는 배열이어야 합니다."})
+            if len(raw_symbols) > WATCHLIST_MAX:
+                return self._send_json(400, {"error": f"관심종목은 최대 {WATCHLIST_MAX}개까지 등록할 수 있습니다."})
+
+            symbols: list[str] = []
+            for s in raw_symbols:
+                if not isinstance(s, str):
+                    return self._send_json(400, {"error": "종목 코드는 문자열이어야 합니다."})
+                sym = s.strip().upper()
+                if not SYMBOL_PATTERN.fullmatch(sym):
+                    return self._send_json(400, {"error": f"잘못된 종목 코드입니다: {s!r}"})
+                if sym not in symbols:
+                    symbols.append(sym)
+
+            # 새로 추가된 종목이 실제 존재하는지 토스 API로 확인 (real/의 관례와 동일)
+            if symbols:
+                try:
+                    info = call_with_reauth(session, lambda token: get_stock_info(token, symbols))
+                except requests.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else 502
+                    return self._send_json(status, {"error": f"토스 API 오류 ({status})"})
+                except requests.RequestException:
+                    return self._send_json(502, {"error": "토스 API에 연결할 수 없습니다."})
+                missing = [s for s in symbols if s not in info]
+                if missing:
+                    return self._send_json(400, {"error": f"존재하지 않는 종목 코드입니다: {', '.join(missing)}"})
+
+            save_watchlist(symbols)
+            return self._send_json(200, {"ok": True, "symbols": symbols})
 
         if path == "/api/logout":
             sid = _session_id_from_cookie(self)

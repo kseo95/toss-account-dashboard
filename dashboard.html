@@ -223,6 +223,30 @@
   #resetRebalanceBtn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
   #resetRebalanceBtn:hover { color: var(--text); border-color: var(--muted); }
   #rebalanceSaved { color: var(--muted); font-size: 12px; display: none; }
+
+  .watchlist-search { position: relative; margin-bottom: 14px; }
+  .watchlist-search input {
+    width: 100%; padding: 9px 10px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); font-size: 13px;
+  }
+  .watchlist-search input:focus { outline: none; border-color: var(--accent); }
+  .watchlist-suggestions {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    max-height: 220px; overflow-y: auto;
+  }
+  .watchlist-suggestions .item {
+    display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px;
+    cursor: pointer; font-size: 13px;
+  }
+  .watchlist-suggestions .item:hover { background: var(--bg); }
+  .watchlist-suggestions .item .sym { color: var(--muted); font-size: 12px; }
+  .watchlist-suggestions .empty { padding: 8px 12px; color: var(--muted); font-size: 12px; }
+  .watchlist-remove {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 5px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+  }
+  .watchlist-remove:hover { color: var(--danger); border-color: var(--danger); }
 </style>
 </head>
 <body>
@@ -325,6 +349,18 @@
       <table><thead><tr>
         <th>종목</th><th>수량</th><th id="usEvalHeader">평가금액(원)</th><th id="usPlHeader">손익(원)</th><th>수익률(%)</th><th>지분율(%)</th>
       </tr></thead><tbody id="usRows"></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>관심종목</h2>
+      <div id="watchlistError" class="rb-error"></div>
+      <div class="watchlist-search">
+        <input id="watchlistSearchInput" type="text" placeholder="종목명 또는 티커로 검색 (예: 삼성전자, AAPL)" autocomplete="off" spellcheck="false">
+        <div id="watchlistSuggestions" class="watchlist-suggestions" style="display:none;"></div>
+      </div>
+      <table><thead><tr>
+        <th>종목</th><th>현재가</th><th>등락률(%)</th><th></th>
+      </tr></thead><tbody id="watchlistRows"></tbody></table>
     </div>
   </div>
 </main>
@@ -847,9 +883,123 @@ async function loadHoldings() {
   renderCashSymbolPicker();
 }
 
+// ---------- 관심종목 검색/추가/삭제 ----------
+// 토스 API 자체에는 검색 기능이 없어서(real/과 동일), 서버가 네이버 증권 자동완성으로 후보를 찾고
+// 토스 API로 검증한 결과를 돌려준다. 추가/삭제는 항상 전체 목록을 다시 저장하는 방식(cash-symbols와 동일 패턴).
+const watchlistSearchInput = document.getElementById('watchlistSearchInput');
+const watchlistSuggestions = document.getElementById('watchlistSuggestions');
+const watchlistRows = document.getElementById('watchlistRows');
+const watchlistError = document.getElementById('watchlistError');
+let watchlistSymbols = [];   // 서버와 동기화된 현재 관심종목 심볼 목록
+let watchlistSearchSeq = 0;  // 응답이 늦게 와서 최신 검색어 결과를 덮어쓰지 않도록 순번으로 확인
+
+function fmtPrice(price, currency) {
+  return currency === 'USD' ? fmtUsd(price) : Math.round(price).toLocaleString('ko-KR');
+}
+
+function showWatchlistError(msg) {
+  watchlistError.textContent = msg;
+  watchlistError.style.display = 'block';
+}
+
+function renderWatchlistTable(items) {
+  watchlistRows.innerHTML = '';
+  if (!items.length) {
+    watchlistRows.innerHTML = '<tr class="empty-row"><td colspan="4">관심종목이 없습니다. 위에서 검색해서 추가하세요.</td></tr>';
+    return;
+  }
+  items.forEach(it => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${it.name} <span style="color:var(--muted)">(${it.symbol})</span></td>
+      <td>${fmtPrice(it.price, it.currency)}</td>
+      <td class="${signClass(it.change_pct)}">${fmtPct(it.change_pct)}</td>
+      <td><button type="button" class="watchlist-remove">삭제</button></td>
+    `;
+    tr.querySelector('.watchlist-remove').addEventListener('click', () => saveWatchlistSymbols(watchlistSymbols.filter(s => s !== it.symbol)));
+    watchlistRows.appendChild(tr);
+  });
+}
+
+async function loadWatchlist() {
+  const res = await fetch('/api/watchlist');
+  if (!res.ok) return;
+  const data = await res.json();
+  watchlistSymbols = (data.items || []).map(it => it.symbol);
+  renderWatchlistTable(data.items || []);
+}
+
+async function saveWatchlistSymbols(symbols) {
+  watchlistError.style.display = 'none';
+  const res = await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    showWatchlistError(data.error || '저장에 실패했습니다.');
+    return;
+  }
+  watchlistSymbols = data.symbols;
+  await loadWatchlist();
+}
+
+function hideWatchlistSuggestions() {
+  watchlistSuggestions.style.display = 'none';
+  watchlistSuggestions.innerHTML = '';
+}
+
+function renderWatchlistSuggestions(results) {
+  watchlistSuggestions.innerHTML = '';
+  if (!results.length) {
+    watchlistSuggestions.innerHTML = '<div class="empty">검색 결과가 없습니다.</div>';
+  } else {
+    results.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'item';
+      const already = watchlistSymbols.includes(r.symbol);
+      div.innerHTML = `<span>${r.name}</span><span class="sym">${r.symbol}${already ? ' · 이미 등록됨' : ''}</span>`;
+      div.addEventListener('click', () => {
+        hideWatchlistSuggestions();
+        watchlistSearchInput.value = '';
+        if (!already) saveWatchlistSymbols([...watchlistSymbols, r.symbol]);
+      });
+      watchlistSuggestions.appendChild(div);
+    });
+  }
+  watchlistSuggestions.style.display = 'block';
+}
+
+let watchlistSearchTimer = null;
+watchlistSearchInput.addEventListener('input', () => {
+  const q = watchlistSearchInput.value.trim();
+  clearTimeout(watchlistSearchTimer);
+  if (!q) {
+    hideWatchlistSuggestions();
+    return;
+  }
+  watchlistSearchTimer = setTimeout(async () => {
+    const seq = ++watchlistSearchSeq;
+    try {
+      const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+      if (!res.ok || seq !== watchlistSearchSeq) return;
+      const data = await res.json();
+      if (seq !== watchlistSearchSeq) return;
+      renderWatchlistSuggestions(data.results || []);
+    } catch (e) {
+      // 자동완성 실패는 화면 에러까지 띄우지 않고 조용히 무시(다음 입력에서 다시 시도됨).
+    }
+  }, 300);
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.watchlist-search')) hideWatchlistSuggestions();
+});
+
 async function enterDashboard() {
   showLoggedIn();
-  await Promise.all([loadHoldings(), loadRebalanceConfig()]);
+  await Promise.all([loadHoldings(), loadRebalanceConfig(), loadWatchlist()]);
 }
 
 async function checkSession() {
