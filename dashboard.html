@@ -371,11 +371,11 @@ function showLoggedOut() {
 function fmtWon(n) {
   return Math.round(n).toLocaleString('ko-KR') + '원';
 }
-// 헤더의 환율 표시 (real/dashboard.html과 같은 형식): "USD/KRW 1,391.20   USD/JPY 147.33 (Yahoo Finance 23:17 기준)"
+// 헤더의 환율 표시: "USD/KRW 1,391.20   USD/JPY 147.33 (23:17 기준)" (출처는 화면에 안 보여줌, 시각만 표시)
 function renderFxDisplay(usdKrw, usdJpy) {
   let text = `USD/KRW ${usdKrw.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
   if (usdJpy) {
-    text += `   USD/JPY ${usdJpy.rate.toLocaleString('en-US', { maximumFractionDigits: 2 })} (${usdJpy.source} ${usdJpy.as_of} 기준)`;
+    text += `   USD/JPY ${usdJpy.rate.toLocaleString('en-US', { maximumFractionDigits: 2 })} (${usdJpy.as_of} 기준)`;
   }
   document.getElementById('fxDisplay').textContent = text;
 }
