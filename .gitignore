@@ -6,3 +6,6 @@ __pycache__/
 cash_symbols.json
 rebalance.json
 watchlist.json
+ma_rules.json
+strategy_config.json
+strategy_state.json

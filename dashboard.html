@@ -200,11 +200,12 @@
     width: 100%;
   }
   .rb-category-row input:focus { outline: none; border-color: var(--accent); }
-  .rb-category-row button.rb-remove {
+  /* rb-category-row 전용이 아니라 어디서든 쓰는 공용 삭제 버튼 스타일(ma-rule-row 등도 재사용) */
+  button.rb-remove {
     background: transparent; border: 1px solid var(--border); color: var(--muted);
     border-radius: 5px; padding: 4px 8px; font-size: 11px; cursor: pointer;
   }
-  .rb-category-row button.rb-remove:hover { color: var(--danger); border-color: var(--danger); }
+  button.rb-remove:hover { color: var(--danger); border-color: var(--danger); }
   .rb-add {
     margin-top: 8px; background: transparent; border: 1px dashed var(--border); color: var(--muted);
     border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; width: 100%;
@@ -247,6 +248,39 @@
     border-radius: 5px; padding: 2px 8px; font-size: 11px; cursor: pointer;
   }
   .watchlist-remove:hover { color: var(--danger); border-color: var(--danger); }
+
+  .ma-form-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .ma-form-row select, .ma-form-row input[type="number"] {
+    padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px;
+  }
+  .ma-form-row input[type="number"] { width: 70px; }
+  .ma-form-row button {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+  }
+  .ma-form-row button:disabled { opacity: 0.6; cursor: default; }
+  .ma-rule-row {
+    display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+  }
+  .ma-rule-row:last-child { border-bottom: none; }
+  .ma-rule-row .meta { color: var(--muted); font-size: 12px; }
+  .ma-rule-row button.rb-remove { margin-left: auto; }
+  #saveMaRulesBtn { background: var(--accent); color: #fff; border: none; }
+  #saveMaRulesBtn:disabled { opacity: 0.6; cursor: default; }
+
+  .strategy-stage-row {
+    display: grid; grid-template-columns: 110px 130px auto; gap: 8px; align-items: center; padding: 6px 0;
+  }
+  .strategy-stage-row input {
+    padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; width: 100%;
+  }
+  .strategy-stage-row input:focus { outline: none; border-color: var(--accent); }
+  .strategy-stage-badge {
+    display: inline-block; padding: 2px 7px; margin: 1px 3px 1px 0; border-radius: 4px; font-size: 11px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .strategy-stage-badge.broken { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #saveStrategyConfigBtn { background: var(--accent); color: #fff; border: none; }
+  #saveStrategyConfigBtn:disabled { opacity: 0.6; cursor: default; }
 </style>
 </head>
 <body>
@@ -361,6 +395,84 @@
       <table><thead><tr>
         <th>종목</th><th>현재가</th><th>등락률(%)</th><th></th>
       </tr></thead><tbody id="watchlistRows"></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>MA 감시</h2>
+      <div id="maError" class="rb-error"></div>
+      <div class="watchlist-search" id="maSearchWrap">
+        <input id="maSearchInput" type="text" placeholder="종목명 또는 티커로 검색해서 규칙에 추가할 종목 선택" autocomplete="off" spellcheck="false">
+        <div id="maSuggestions" class="watchlist-suggestions" style="display:none;"></div>
+      </div>
+      <div id="maSelectedSymbol" class="rb-hint" style="margin-top:8px;"></div>
+
+      <div class="ma-form-row">
+        <label for="maIntervalSelect">봉 종류</label>
+        <select id="maIntervalSelect">
+          <option value="day">일봉</option>
+          <option value="week">주봉</option>
+        </select>
+        <label for="maPeriodInput">기간</label>
+        <input id="maPeriodInput" type="number" min="2" max="300" step="1" value="60">
+        <label for="maProximityInput">근접 기준(%)</label>
+        <input id="maProximityInput" type="number" min="0" max="100" step="0.1" value="3">
+        <button id="addMaRuleBtn" type="button">규칙에 추가</button>
+      </div>
+
+      <div id="maRuleDraftList" style="margin-top:12px;"></div>
+
+      <div class="rb-actions">
+        <button id="saveMaRulesBtn">저장</button>
+        <span id="maRulesSaved" class="rb-hint" style="display:none;">저장됨</span>
+      </div>
+
+      <table style="margin-top:16px;"><thead><tr>
+        <th>종목</th><th>봉·기간</th><th>MA</th><th>이격도(%)</th><th>근접</th>
+      </tr></thead><tbody id="maResultRows"></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>분할매수 전략<span class="sub">1차 사이클만 (0%→100% 누적, 매도 없음)</span></h2>
+      <div id="strategyError" class="rb-error"></div>
+
+      <details class="settings">
+        <summary>전략 설정</summary>
+        <div class="rb-rest-row">
+          <label for="strategyIntervalSelect">봉 종류</label>
+          <select id="strategyIntervalSelect">
+            <option value="week">주봉</option>
+            <option value="day">일봉</option>
+          </select>
+        </div>
+
+        <div id="strategyStageList" style="margin-top:12px;"></div>
+        <button id="addStrategyStageBtn" type="button" class="rb-add">+ 단계 추가</button>
+        <div id="strategyTrancheSum" class="rb-sum"></div>
+
+        <div class="rb-rest-row" style="margin-top:16px;">
+          <label for="strategyRecoveryPeriodsInput">회복 판정 기간(쉼표로 구분, 하나라도 상방 돌파하면 완성)</label>
+          <input id="strategyRecoveryPeriodsInput" type="text" placeholder="예: 20, 60, 120, 200, 240" style="flex:1;">
+        </div>
+        <div class="rb-rest-row">
+          <label for="strategyRecoveryPctInput">회복 매수 비율(%p)</label>
+          <input id="strategyRecoveryPctInput" type="number" min="0.1" max="100" step="0.1">
+        </div>
+
+        <div class="rb-rest-row" style="margin-top:16px;">
+          <label for="strategyExcludedInput">전략 제외 종목 (쉼표로 구분, 채권/현금성 자산 등)</label>
+          <input id="strategyExcludedInput" type="text" placeholder="예: SGOV, TLT, FXY" style="flex:1;">
+        </div>
+
+        <div class="rb-actions">
+          <button id="saveStrategyConfigBtn">저장</button>
+          <button id="resetStrategyConfigBtn" type="button">되돌리기</button>
+          <span id="strategyConfigSaved" class="rb-hint" style="display:none;">저장됨</span>
+        </div>
+      </details>
+
+      <table style="margin-top:16px;"><thead><tr>
+        <th>종목</th><th>진행 단계</th><th>진입 목표비율</th><th>단계 상세</th>
+      </tr></thead><tbody id="strategyRows"></tbody></table>
     </div>
   </div>
 </main>
@@ -997,9 +1109,357 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.watchlist-search')) hideWatchlistSuggestions();
 });
 
+// ---------- MA 감시 ----------
+// 지표를 MA 하나로 하드코딩하지 않기 위해 (일봉/주봉, 기간, 근접 기준%)는 전부 사용자가 이 화면에서
+// 정한다. 종목 검색은 관심종목과 같은 /api/search를 재사용(같은 자동완성 UX).
+const maSearchInput = document.getElementById('maSearchInput');
+const maSuggestions = document.getElementById('maSuggestions');
+const maSelectedSymbolEl = document.getElementById('maSelectedSymbol');
+const maError = document.getElementById('maError');
+const maRuleDraftList = document.getElementById('maRuleDraftList');
+const maResultRows = document.getElementById('maResultRows');
+const addMaRuleBtn = document.getElementById('addMaRuleBtn');
+const saveMaRulesBtn = document.getElementById('saveMaRulesBtn');
+const maRulesSaved = document.getElementById('maRulesSaved');
+
+let maSelected = null;   // { symbol, name } - 검색해서 고른 종목(아직 규칙에 추가 전)
+let maDraft = [];        // 화면에서 편집 중인 규칙 목록 [{symbol, name, interval, period, proximity_pct}]
+let maSearchSeq = 0;
+
+function renderMaSelected() {
+  maSelectedSymbolEl.textContent = maSelected ? `선택된 종목: ${maSelected.name} (${maSelected.symbol})` : '검색해서 종목을 먼저 선택하세요.';
+}
+renderMaSelected();
+
+function hideMaSuggestions() {
+  maSuggestions.style.display = 'none';
+  maSuggestions.innerHTML = '';
+}
+
+function renderMaSuggestions(results) {
+  maSuggestions.innerHTML = '';
+  if (!results.length) {
+    maSuggestions.innerHTML = '<div class="empty">검색 결과가 없습니다.</div>';
+  } else {
+    results.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML = `<span>${r.name}</span><span class="sym">${r.symbol}</span>`;
+      div.addEventListener('click', () => {
+        maSelected = { symbol: r.symbol, name: r.name };
+        renderMaSelected();
+        hideMaSuggestions();
+        maSearchInput.value = '';
+      });
+      maSuggestions.appendChild(div);
+    });
+  }
+  maSuggestions.style.display = 'block';
+}
+
+let maSearchTimer = null;
+maSearchInput.addEventListener('input', () => {
+  const q = maSearchInput.value.trim();
+  clearTimeout(maSearchTimer);
+  if (!q) {
+    hideMaSuggestions();
+    return;
+  }
+  maSearchTimer = setTimeout(async () => {
+    const seq = ++maSearchSeq;
+    try {
+      const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+      if (!res.ok || seq !== maSearchSeq) return;
+      const data = await res.json();
+      if (seq !== maSearchSeq) return;
+      renderMaSuggestions(data.results || []);
+    } catch (e) {
+      // 자동완성 실패는 화면 에러까지 띄우지 않고 조용히 무시.
+    }
+  }, 300);
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#maSearchWrap')) hideMaSuggestions();
+});
+
+function intervalLabel(interval) {
+  return interval === 'day' ? '일봉' : '주봉';
+}
+
+function renderMaDraftList() {
+  maRuleDraftList.innerHTML = '';
+  if (!maDraft.length) {
+    maRuleDraftList.innerHTML = '<div style="color:var(--muted); font-size:13px;">등록된 규칙이 없습니다. 위에서 종목을 검색해 추가하세요.</div>';
+    return;
+  }
+  maDraft.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'ma-rule-row';
+    row.innerHTML = `
+      <span>${r.name} <span class="meta">(${r.symbol})</span></span>
+      <span class="meta">${intervalLabel(r.interval)} ${r.period} · 근접 ${r.proximity_pct}% 이내</span>
+      <button type="button" class="rb-remove">삭제</button>
+    `;
+    row.querySelector('.rb-remove').addEventListener('click', () => {
+      maDraft.splice(i, 1);
+      renderMaDraftList();
+    });
+    maRuleDraftList.appendChild(row);
+  });
+}
+
+addMaRuleBtn.addEventListener('click', () => {
+  maError.style.display = 'none';
+  if (!maSelected) {
+    maError.textContent = '먼저 종목을 검색해서 선택하세요.';
+    maError.style.display = 'block';
+    return;
+  }
+  const interval = document.getElementById('maIntervalSelect').value;
+  const period = parseInt(document.getElementById('maPeriodInput').value, 10);
+  const proximity_pct = parseFloat(document.getElementById('maProximityInput').value);
+  maDraft.push({ symbol: maSelected.symbol, name: maSelected.name, interval, period, proximity_pct });
+  maSelected = null;
+  renderMaSelected();
+  renderMaDraftList();
+});
+
+function fmtMaValue(v, currency) {
+  return currency === 'USD' ? fmtUsd(v) : Math.round(v).toLocaleString('ko-KR');
+}
+
+function renderMaResults(rows) {
+  maResultRows.innerHTML = '';
+  if (!rows.length) {
+    maResultRows.innerHTML = '<tr class="empty-row"><td colspan="5">등록된 MA 규칙이 없습니다.</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    if (!r.ok) {
+      tr.innerHTML = `
+        <td>${r.name} <span style="color:var(--muted)">(${r.symbol})</span></td>
+        <td>${intervalLabel(r.interval)} ${r.period}</td>
+        <td colspan="3" style="color:var(--muted); text-align:left;">${r.reason}</td>
+      `;
+    } else {
+      tr.innerHTML = `
+        <td>${r.name} <span style="color:var(--muted)">(${r.symbol})</span></td>
+        <td>${intervalLabel(r.interval)} ${r.period}</td>
+        <td>${fmtMaValue(r.ma_value, r.currency)}</td>
+        <td class="${signClass(r.diff_pct)}">${fmtPct(r.diff_pct)}</td>
+        <td>${r.hit ? '✅' : '—'}</td>
+      `;
+    }
+    maResultRows.appendChild(tr);
+  });
+}
+
+async function loadMaRules() {
+  const res = await fetch('/api/ma-rules');
+  if (!res.ok) return;
+  const data = await res.json();
+  const rows = data.rows || [];
+  maDraft = rows.map(r => ({ symbol: r.symbol, name: r.name, interval: r.interval, period: r.period, proximity_pct: r.proximity_pct }));
+  renderMaDraftList();
+  renderMaResults(rows);
+}
+
+saveMaRulesBtn.addEventListener('click', async () => {
+  maError.style.display = 'none';
+  maRulesSaved.style.display = 'none';
+  saveMaRulesBtn.disabled = true;
+  try {
+    const res = await fetch('/api/ma-rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rules: maDraft.map(({ symbol, interval, period, proximity_pct }) => ({ symbol, interval, period, proximity_pct })),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      maError.textContent = data.error || '저장에 실패했습니다.';
+      maError.style.display = 'block';
+      return;
+    }
+    maRulesSaved.style.display = 'inline';
+    await loadMaRules();
+  } catch (e) {
+    maError.textContent = '서버에 연결할 수 없습니다.';
+    maError.style.display = 'block';
+  } finally {
+    saveMaRulesBtn.disabled = false;
+  }
+});
+
+// ---------- 분할매수 전략 (1차 사이클만) ----------
+// MA 감시와 마찬가지로 기간/매수%p를 사용자가 화면에서 정한다(하드코딩 없음). 종목별 진행 상태는
+// 서버(strategy_state.json)가 기억하므로, 여기서는 편집 중인 "설정"(strategyDraft)만 들고 있는다.
+let strategyDraft = { interval: 'week', periods: [], tranches: [] };
+
+function renderStrategyStages() {
+  const container = document.getElementById('strategyStageList');
+  container.innerHTML = '';
+  strategyDraft.periods.forEach((period, i) => {
+    const row = document.createElement('div');
+    row.className = 'strategy-stage-row';
+    row.innerHTML = `
+      <input type="number" min="2" max="300" step="1" placeholder="기간" value="${period}" data-field="period">
+      <input type="number" min="0.1" max="100" step="0.1" placeholder="매수%p" value="${strategyDraft.tranches[i]}" data-field="tranche">
+      <button type="button" class="rb-remove">삭제</button>
+    `;
+    row.querySelector('[data-field="period"]').addEventListener('input', e => {
+      strategyDraft.periods[i] = parseInt(e.target.value, 10) || 0;
+    });
+    row.querySelector('[data-field="tranche"]').addEventListener('input', e => {
+      strategyDraft.tranches[i] = parseFloat(e.target.value) || 0;
+      updateStrategyTrancheSum();
+    });
+    row.querySelector('.rb-remove').addEventListener('click', () => {
+      strategyDraft.periods.splice(i, 1);
+      strategyDraft.tranches.splice(i, 1);
+      renderStrategyStages();
+      updateStrategyTrancheSum();
+    });
+    container.appendChild(row);
+  });
+  updateStrategyTrancheSum();
+}
+
+function updateStrategyTrancheSum() {
+  const stageSum = strategyDraft.tranches.reduce((s, t) => s + (parseFloat(t) || 0), 0);
+  const recoveryPct = parseFloat(document.getElementById('strategyRecoveryPctInput').value) || 0;
+  const el = document.getElementById('strategyTrancheSum');
+  const rounded = Math.round((stageSum + recoveryPct) * 10) / 10;
+  el.textContent = `단계별 매수비율(%p) 합계 ${Math.round(stageSum * 10) / 10}% + 회복 매수 ${recoveryPct}% = ${rounded}% (100%면 목표 진입 완료)`;
+  el.classList.toggle('warn', rounded > 100);
+}
+
+document.getElementById('addStrategyStageBtn').addEventListener('click', () => {
+  strategyDraft.periods.push(60);
+  strategyDraft.tranches.push(5);
+  renderStrategyStages();
+});
+
+document.getElementById('strategyIntervalSelect').addEventListener('change', e => {
+  strategyDraft.interval = e.target.value;
+});
+
+document.getElementById('strategyRecoveryPctInput').addEventListener('input', updateStrategyTrancheSum);
+
+function intervalUnit(interval) {
+  return interval === 'day' ? '일' : '주';
+}
+
+function renderStrategyResults(rows) {
+  const tbody = document.getElementById('strategyRows');
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="4">대상 종목이 없습니다(보유·관심종목이 없거나 전부 전략 제외됨).</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    if (!r.ok) {
+      tr.innerHTML = `
+        <td>${r.name} <span style="color:var(--muted)">(${r.symbol})</span></td>
+        <td colspan="3" style="color:var(--muted); text-align:left;">${r.reason}</td>
+      `;
+    } else {
+      const unit = intervalUnit(strategyDraft.interval);
+      const badges = r.stages.map(s => {
+        if (!s.ok) return `<span class="strategy-stage-badge">${s.period}${unit} 데이터부족</span>`;
+        const cls = s.broken ? 'strategy-stage-badge broken' : 'strategy-stage-badge';
+        return `<span class="${cls}">${s.period}${unit} ${fmtPct(s.diff_pct)}</span>`;
+      }).join('');
+      const recoveryLabel = r.recovered
+        ? `<span class="strategy-stage-badge broken">회복 완료 ✅</span>`
+        : (r.stage_count >= r.stage_total ? `<span class="strategy-stage-badge">회복 대기중</span>` : '');
+      tr.innerHTML = `
+        <td>${r.name} <span style="color:var(--muted)">(${r.symbol})</span></td>
+        <td>${r.stage_count}/${r.stage_total}단계</td>
+        <td>${r.entry_pct.toFixed(1)}%</td>
+        <td style="text-align:left;">${badges}${recoveryLabel}</td>
+      `;
+    }
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadStrategyConfig() {
+  const res = await fetch('/api/strategy-config');
+  if (!res.ok) return;
+  const data = await res.json();
+  strategyDraft = { interval: data.interval, periods: [...data.periods], tranches: [...data.tranches] };
+  document.getElementById('strategyIntervalSelect').value = strategyDraft.interval;
+  document.getElementById('strategyRecoveryPeriodsInput').value = (data.recovery_periods || []).join(', ');
+  document.getElementById('strategyRecoveryPctInput').value = data.recovery_pct;
+  document.getElementById('strategyExcludedInput').value = (data.excluded_symbols || []).join(', ');
+  renderStrategyStages();
+}
+
+async function loadStrategyRows() {
+  const res = await fetch('/api/strategy');
+  if (!res.ok) return;
+  const data = await res.json();
+  renderStrategyResults(data.rows || []);
+}
+
+async function loadStrategy() {
+  await loadStrategyConfig();
+  await loadStrategyRows();
+}
+
+document.getElementById('resetStrategyConfigBtn').addEventListener('click', () => {
+  loadStrategyConfig();
+});
+
+document.getElementById('saveStrategyConfigBtn').addEventListener('click', async () => {
+  const strategyError = document.getElementById('strategyError');
+  const strategyConfigSaved = document.getElementById('strategyConfigSaved');
+  const btn = document.getElementById('saveStrategyConfigBtn');
+  strategyError.style.display = 'none';
+  strategyConfigSaved.style.display = 'none';
+  btn.disabled = true;
+  try {
+    const excluded_symbols = document.getElementById('strategyExcludedInput').value
+      .split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    const recovery_periods = document.getElementById('strategyRecoveryPeriodsInput').value
+      .split(/[,\s]+/).map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n));
+    const recovery_pct = parseFloat(document.getElementById('strategyRecoveryPctInput').value) || 0;
+    const res = await fetch('/api/strategy-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interval: strategyDraft.interval,
+        periods: strategyDraft.periods,
+        tranches: strategyDraft.tranches,
+        recovery_periods,
+        recovery_pct,
+        excluded_symbols,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      strategyError.textContent = data.error || '저장에 실패했습니다.';
+      strategyError.style.display = 'block';
+      return;
+    }
+    strategyConfigSaved.style.display = 'inline';
+    await loadStrategy();
+  } catch (e) {
+    strategyError.textContent = '서버에 연결할 수 없습니다.';
+    strategyError.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 async function enterDashboard() {
   showLoggedIn();
-  await Promise.all([loadHoldings(), loadRebalanceConfig(), loadWatchlist()]);
+  await Promise.all([loadHoldings(), loadRebalanceConfig(), loadWatchlist(), loadMaRules(), loadStrategy()]);
 }
 
 async function checkSession() {
