@@ -107,8 +107,10 @@ STRATEGY_DEFAULT_TEMPLATES = {
             "multiplier_factor": 1.0,
         }
     },
-    "assignments": {},  # {symbol: template_name} - 배정 안 된 종목은 전략 대상에서 빠짐
+    "assignments": {},  # {symbol: template_name} - 직접 배정(기본 전략보다 우선)
+    "default_template": "ma-default",  # 직접 배정 안 된 보유종목에 자동 적용("" = 자동 적용 안 함)
     "excluded_symbols": [],
+    "position_pct": {},  # {symbol: 최종 목표 비중(총자산 대비 %)} - 없으면 금액 계산 안 함
 }
 
 # 세션 저장소: 메모리에만 유지, 디스크 기록 없음.
@@ -781,7 +783,45 @@ def validate_strategy_templates(data) -> tuple[dict, str | None]:
         if sym not in clean_excluded:
             clean_excluded.append(sym)
 
-    return {"templates": clean_templates, "assignments": clean_assignments, "excluded_symbols": clean_excluded}, None
+    # 기본 전략: 키가 없던 예전 파일은 기본 템플릿이 있으면 그걸로(보유종목 전체 자동 적용이 기본값).
+    default_template = data.get("default_template", "ma-default" if "ma-default" in clean_templates else "")
+    if not isinstance(default_template, str) or (default_template and default_template not in clean_templates):
+        return {}, "기본 전략 템플릿이 존재하지 않습니다."
+
+    # 종목별 최종 목표 비중(총자산 대비 %): 진입 목표비율 100%일 때 이만큼 들고 있는 게 목표.
+    # 기본 전략으로 자동 배정된 보유종목도 쓸 수 있어서 배정 여부는 안 따진다. 전략 제외 종목 값은 버린다.
+    raw_position = data.get("position_pct", {})
+    if not isinstance(raw_position, dict):
+        return {}, "목표 비중 형식이 올바르지 않습니다."
+    clean_position: dict[str, float] = {}
+    for symbol, pct in raw_position.items():
+        sym = symbol.strip().upper() if isinstance(symbol, str) else ""
+        if not SYMBOL_PATTERN.fullmatch(sym) or sym in clean_excluded or pct is None or pct == "":
+            continue
+        value = to_float(pct, -1.0)
+        if not (0 < value <= 100):
+            return {}, f"'{sym}'의 목표 비중은 0보다 크고 100% 이하여야 합니다."
+        clean_position[sym] = value
+    if sum(clean_position.values()) > 100:
+        return {}, f"종목별 목표 비중 합계가 100%를 넘습니다 (현재 {sum(clean_position.values()):.1f}%)."
+
+    return {"templates": clean_templates, "assignments": clean_assignments, "default_template": default_template,
+            "excluded_symbols": clean_excluded, "position_pct": clean_position}, None
+
+
+def effective_assignments(data: dict, held: set[str], cash_symbols: set[str]) -> tuple[dict[str, str], list[str]]:
+    """직접 배정 + (직접 배정 안 된 보유종목 → 기본 전략). 전략 제외·현금 취급 종목은 자동 배정에서 뺀다.
+    반환: (적용할 배정 전체, 기본 전략으로 자동 배정된 종목들)."""
+    assignments = dict(data["assignments"])
+    auto: list[str] = []
+    default = data.get("default_template", "")
+    if default:
+        skip = set(data["excluded_symbols"]) | cash_symbols
+        for sym in sorted(held):
+            if sym not in assignments and sym not in skip:
+                assignments[sym] = default
+                auto.append(sym)
+    return assignments, auto
 
 
 def load_strategy_templates(store: "UserStore") -> dict:
@@ -998,12 +1038,25 @@ def compute_strategy_rows(
         if multiplier_triggered:
             step_pct_sum *= multiplier_factor
         entry_pct = min(100.0, step_pct_sum + (recovery_pct if recovered else 0.0))
+        # 다음에 조건이 충족되면 추가로 늘어날 %p: 안 깨진 다음 단계, 단계를 다 깨면 회복 매수분.
+        if template.get("assign_mode") == "order":
+            pending = [s["buy_pct"] for s in steps[len(broken_ids):]]
+        else:
+            pending = [s["buy_pct"] for s in steps if s["id"] not in broken_ids]
+        if pending:
+            next_buy_pct = pending[0] * (multiplier_factor if multiplier_triggered else 1.0)
+        elif not recovered and recovery_steps:
+            next_buy_pct = recovery_pct
+        else:
+            next_buy_pct = 0.0
+        next_buy_pct = max(0.0, min(next_buy_pct, 100.0 - entry_pct))
         rows.append(
             {
                 **row_base,
                 "ok": True,
                 "price": cur_price,
                 "entry_pct": entry_pct,
+                "next_buy_pct": next_buy_pct,
                 "stage_count": len(broken_ids),
                 "stage_total": len(steps),
                 "steps": step_results,
@@ -1016,6 +1069,43 @@ def compute_strategy_rows(
         )
 
     return rows, state_changed
+
+
+def apply_strategy_sizing(rows: list[dict], position_pct: dict[str, float], holdings: dict) -> None:
+    """목표 비중이 정해진 종목 행에 "지금 얼마를 더 사야 하나"를 붙인다(rows를 직접 수정).
+    지금 있어야 할 비중 = 최종 목표 비중 × 진입 목표비율. 부족분 = 총자산 × 그 비중 − 현재 평가금액.
+    총자산은 보유 대시보드와 같은 분모(보유종목 + 예수금)."""
+    total = holdings["totals"]["eval_krw"]
+    usd_krw = holdings["usd_krw"]
+    held_krw: dict[str, float] = {}
+    held_currency: dict[str, str] = {}
+    for r in holdings["stocks"] + holdings["cash"]["stocks"]:
+        held_krw[r["심볼"]] = held_krw.get(r["심볼"], 0.0) + r["평가금액(원)"]
+        held_currency[r["심볼"]] = r["통화"]
+    for row in rows:
+        pct = position_pct.get(row["symbol"])
+        if not row.get("ok") or pct is None or total <= 0:
+            continue
+        currency = row["currency"] if row["currency"] in ("KRW", "USD") else held_currency.get(row["symbol"], "KRW")
+        price_krw = row["price"] * (usd_krw if currency == "USD" else 1.0)
+        current_krw = held_krw.get(row["symbol"], 0.0)
+        target_now_pct = pct * row["entry_pct"] / 100
+        gap_krw = total * target_now_pct / 100 - current_krw
+        next_krw = total * pct / 100 * row.get("next_buy_pct", 0.0) / 100
+        row["sizing"] = {
+            "position_pct": pct,
+            "full_krw": total * pct / 100,
+            "current_pct": current_krw / total * 100,
+            "current_krw": current_krw,
+            "target_now_pct": target_now_pct,
+            "target_now_krw": total * target_now_pct / 100,
+            "buy_now_krw": max(0.0, gap_krw),
+            "buy_now_shares": int(max(0.0, gap_krw) // price_krw) if price_krw > 0 else 0,
+            "over_krw": max(0.0, -gap_krw),
+            "next_buy_pct_of_total": pct * row.get("next_buy_pct", 0.0) / 100,
+            "next_buy_krw": next_krw,
+            "next_buy_shares": int(next_krw // price_krw) if price_krw > 0 else 0,
+        }
 
 
 def load_rebalance_config(store: "UserStore") -> dict:
@@ -2098,18 +2188,27 @@ class Handler(BaseHTTPRequestHandler):
             watchlist_symbols = set(load_watchlist(store_for(session)))
             try:
                 accounts = call_with_reauth(session, get_accounts)
-                held = call_with_reauth(session, lambda token: held_symbols(token, accounts))
+                holdings = None
+                if data["position_pct"]:  # 금액 계산에 총자산이 필요할 때만 전체 보유 계산
+                    holdings = call_with_reauth(session, lambda token: fetch_holdings_data(token, accounts, store_for(session)))
+                    held = {r["심볼"] for r in holdings["stocks"] + holdings["cash"]["stocks"]}
+                else:
+                    held = call_with_reauth(session, lambda token: held_symbols(token, accounts))
                 symbols = sorted(held | watchlist_symbols)
+                assignments, auto = effective_assignments(data, held, set(load_cash_symbols(store_for(session))))
                 state = load_strategy_state(store_for(session))
                 rows, changed = call_with_reauth(
                     session,
                     lambda token: compute_strategy_rows(
-                        token, data["templates"], data["assignments"], set(data["excluded_symbols"]), state, symbols
+                        token, data["templates"], assignments, set(data["excluded_symbols"]), state, symbols
                     ),
                 )
                 if changed:
                     save_strategy_state(store_for(session), state)
-                self._send_json(200, {"rows": rows})
+                if holdings is not None:
+                    apply_strategy_sizing(rows, data["position_pct"], holdings)
+                self._send_json(200, {"rows": rows, "auto_assigned": auto,
+                                      "total_krw": holdings["totals"]["eval_krw"] if holdings else None})
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response is not None else 502
                 self._send_json(status, {"error": f"토스 API 오류 ({status})"})

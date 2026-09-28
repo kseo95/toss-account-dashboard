@@ -134,6 +134,32 @@ class ComputeStrategyRowsTest(unittest.TestCase):
                                          assignments={"AAA": "t", "BBB": "t"}, excluded=("BBB",))
         self.assertEqual([r["symbol"] for r in rows], ["AAA"])
 
+    def test_next_buy_pct(self):
+        # fixed: s2(20%p)만 깨짐 → 다음은 안 깨진 s1의 10%p
+        rows, _, _ = self.run_rows(template(), 12.0, [10.0, 10.0, 10.0, 30.0, 30.0])
+        self.assertAlmostEqual(rows[0]["next_buy_pct"], 10.0)
+        # order: 1개 깨짐 → 다음은 두 번째 단계 20%p
+        rows, _, _ = self.run_rows(template(assign_mode="order"), 12.0, [10.0, 10.0, 10.0, 30.0, 30.0])
+        self.assertAlmostEqual(rows[0]["next_buy_pct"], 20.0)
+        # 전 단계 돌파, 회복 전 → 다음은 회복 매수분
+        state = {"AAA": {"broken_step_ids": ["s1", "s2"], "recovered": False, "multiplier_triggered": False}}
+        rows, _, _ = self.run_rows(template(), 1.0, [10.0] * 5, state=state)
+        self.assertAlmostEqual(rows[0]["next_buy_pct"], 30.0)
+        # 회복까지 끝 → 0
+        state = {"AAA": {"broken_step_ids": ["s1", "s2"], "recovered": True, "multiplier_triggered": False}}
+        rows, _, _ = self.run_rows(template(), 1.0, [10.0] * 5, state=state)
+        self.assertEqual(rows[0]["next_buy_pct"], 0.0)
+
+    def test_next_buy_pct_with_multiplier_is_capped(self):
+        mult = [{"id": "m1", "indicator": "CHANGE", "params": {"threshold_pct": -5.0}}]
+        tpl = template(multiplier_steps=mult, multiplier_factor=2.0)
+        rows, _, _ = self.run_rows(tpl, 12.0, [10.0, 10.0, 10.0, 30.0, 30.0], daily=[12.0, 20.0])
+        self.assertAlmostEqual(rows[0]["next_buy_pct"], 20.0)  # s1 10%p × 2
+        tpl = template(multiplier_steps=mult, multiplier_factor=5.0)
+        rows, _, _ = self.run_rows(tpl, 12.0, [10.0, 10.0, 10.0, 30.0, 30.0], daily=[12.0, 20.0])
+        self.assertAlmostEqual(rows[0]["entry_pct"], 100.0)
+        self.assertEqual(rows[0]["next_buy_pct"], 0.0)  # 이미 100%라 더 없음
+
     def test_missing_price(self):
         rows, changed, _ = self.run_rows(template(), 0.0, [10.0] * 5)
         self.assertFalse(rows[0]["ok"])
@@ -172,6 +198,44 @@ class ValidateTemplatesTest(unittest.TestCase):
                 self.assertIsNotNone(err)
                 self.assertIn(frag, err)
 
+    def test_position_pct(self):
+        d = self.base()
+        d["position_pct"] = {"aaa": "12.5", "ZZZ": 5, "a b": 1}  # 기본 전략 대상일 수 있는 ZZZ는 유지, 잘못된 코드는 버림
+        clean, err = server.validate_strategy_templates(d)
+        self.assertIsNone(err)
+        self.assertEqual(clean["position_pct"], {"AAA": 12.5, "ZZZ": 5.0})
+        for bad, frag in [({"AAA": 0}, "0보다"), ({"AAA": 101}, "0보다"), ("x", "형식")]:
+            with self.subTest(bad=bad):
+                d = self.base(); d["position_pct"] = bad
+                _, err = server.validate_strategy_templates(d)
+                self.assertIn(frag, err)
+        d = self.base(); d["position_pct"] = {"AAA": 60, "CCC": 50}
+        _, err = server.validate_strategy_templates(d)
+        self.assertIn("합계", err)
+
+    def test_default_template(self):
+        d = self.base()
+        clean, _ = server.validate_strategy_templates(d)
+        self.assertEqual(clean["default_template"], "")  # 키 없음 + ma-default 템플릿 없음 → 자동 적용 안 함
+        d["default_template"] = "t"
+        clean, err = server.validate_strategy_templates(d)
+        self.assertIsNone(err)
+        self.assertEqual(clean["default_template"], "t")
+        d["default_template"] = "없음"
+        _, err = server.validate_strategy_templates(d)
+        self.assertIn("기본 전략", err)
+        # 예전 파일(키 없음)이라도 ma-default가 있으면 보유종목 전체 자동 적용이 기본
+        legacy = copy.deepcopy(server.STRATEGY_DEFAULT_TEMPLATES)
+        del legacy["default_template"]
+        clean, _ = server.validate_strategy_templates(legacy)
+        self.assertEqual(clean["default_template"], "ma-default")
+
+    def test_position_pct_for_excluded_is_dropped(self):
+        d = self.base(); d["position_pct"] = {"BBB": 5, "CCC": 3}  # BBB는 제외 종목, CCC는 미배정 보유종목일 수 있음
+        clean, err = server.validate_strategy_templates(d)
+        self.assertIsNone(err)
+        self.assertEqual(clean["position_pct"], {"CCC": 3.0})
+
     def test_duplicate_step_ids_are_regenerated(self):
         d = self.base()
         d["templates"]["t"]["steps"][1]["id"] = "s1"
@@ -179,6 +243,59 @@ class ValidateTemplatesTest(unittest.TestCase):
         self.assertIsNone(err)
         ids = [s["id"] for s in clean["templates"]["t"]["steps"]]
         self.assertEqual(len(set(ids)), 2)
+
+
+class EffectiveAssignmentsTest(unittest.TestCase):
+    def test_held_get_default_except_excluded_cash_and_explicit(self):
+        data = {"assignments": {"AAA": "other", "WATCH": "t"}, "default_template": "t", "excluded_symbols": ["TLT"]}
+        assignments, auto = server.effective_assignments(data, {"AAA", "BBB", "TLT", "SGOV"}, {"SGOV"})
+        self.assertEqual(assignments, {"AAA": "other", "WATCH": "t", "BBB": "t"})
+        self.assertEqual(auto, ["BBB"])
+
+    def test_no_default(self):
+        data = {"assignments": {"AAA": "t"}, "default_template": "", "excluded_symbols": []}
+        assignments, auto = server.effective_assignments(data, {"AAA", "BBB"}, set())
+        self.assertEqual(assignments, {"AAA": "t"})
+        self.assertEqual(auto, [])
+
+
+class StrategySizingTest(unittest.TestCase):
+    def holdings(self):
+        return {"totals": {"eval_krw": 10_000_000.0}, "usd_krw": 1000.0,
+                "stocks": [{"심볼": "AAA", "통화": "USD", "평가금액(원)": 100_000.0}],
+                "cash": {"stocks": [{"심볼": "SGOV", "통화": "USD", "평가금액(원)": 3_000_000.0}]}}
+
+    def row(self, sym="AAA", entry=30.0, nxt=15.0, price=50.0, cur="USD"):
+        return {"symbol": sym, "ok": True, "currency": cur, "price": price, "entry_pct": entry, "next_buy_pct": nxt}
+
+    def test_buy_now_and_next(self):
+        rows = [self.row()]
+        server.apply_strategy_sizing(rows, {"AAA": 10.0}, self.holdings())
+        z = rows[0]["sizing"]
+        self.assertAlmostEqual(z["full_krw"], 1_000_000)        # 1천만 × 10%
+        self.assertAlmostEqual(z["target_now_pct"], 3.0)        # 10% × 30%
+        self.assertAlmostEqual(z["current_pct"], 1.0)
+        self.assertAlmostEqual(z["buy_now_krw"], 200_000)       # 30만 − 10만
+        self.assertEqual(z["buy_now_shares"], 4)                # $50 × 1000원 = 5만원/주
+        self.assertAlmostEqual(z["next_buy_krw"], 150_000)      # 100만 × 15%p
+        self.assertEqual(z["next_buy_shares"], 3)
+        self.assertAlmostEqual(z["next_buy_pct_of_total"], 1.5)
+
+    def test_over_target_and_unheld_krw(self):
+        rows = [self.row(entry=5.0), self.row(sym="005930", entry=20.0, price=70_000.0, cur="KRW"), self.row(sym="NOPE")]
+        server.apply_strategy_sizing(rows, {"AAA": 10.0, "005930": 5.0}, self.holdings())
+        a = rows[0]["sizing"]
+        self.assertEqual(a["buy_now_krw"], 0.0)
+        self.assertAlmostEqual(a["over_krw"], 50_000)           # 목표 5만, 보유 10만
+        k = rows[1]["sizing"]
+        self.assertAlmostEqual(k["buy_now_krw"], 100_000)       # 50만 × 20%, 미보유
+        self.assertEqual(k["buy_now_shares"], 1)
+        self.assertNotIn("sizing", rows[2])                     # 목표 비중 없음
+
+    def test_skips_failed_rows(self):
+        rows = [{"symbol": "AAA", "ok": False}]
+        server.apply_strategy_sizing(rows, {"AAA": 10.0}, self.holdings())
+        self.assertNotIn("sizing", rows[0])
 
 
 if __name__ == "__main__":
