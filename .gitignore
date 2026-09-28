@@ -9,3 +9,7 @@ watchlist.json
 ma_rules.json
 strategy_config.json
 strategy_state.json
+weekly_report.json
+
+# 사용자별 저장소(설정·기록)와 서버 비밀값
+data/
