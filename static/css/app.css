@@ -1,0 +1,377 @@
+:root {
+  --bg: #0d1117;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --card: #161b22;
+  --accent: #3b82f6;
+  --danger: #e66767;
+  --profit: #4fae5f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  font-size: 14px;
+}
+header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+header h1 { font-size: 18px; margin: 0; }
+.header-right { display: flex; align-items: center; gap: 14px; }
+#fxDisplay { color: var(--muted); font-size: 12px; }
+#logoutBtn {
+  display: none;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+#logoutBtn:hover { color: var(--text); border-color: var(--muted); }
+
+main {
+  display: flex;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+#loginCard {
+  width: 100%;
+  max-width: 360px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  align-self: flex-start;
+}
+#loginCard h2 { font-size: 16px; margin: 0 0 4px; }
+#loginCard p.hint { color: var(--muted); font-size: 12px; margin: 0 0 20px; line-height: 1.5; }
+#loginCard label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+#loginCard input {
+  width: 100%;
+  padding: 9px 10px;
+  margin-bottom: 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
+#loginCard input:focus { outline: none; border-color: var(--accent); }
+#loginCard button {
+  width: 100%;
+  padding: 10px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#loginCard button:disabled { opacity: 0.6; cursor: default; }
+#loginError {
+  display: none;
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 4px;
+  margin-bottom: 10px;
+}
+
+#connectedView { display: none; width: 100%; max-width: 860px; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h2 { font-size: 15px; margin: 0 0 12px; }
+.card h2 .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.currency-toggle {
+  display: inline-flex;
+  margin-left: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.currency-toggle button {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.currency-toggle button + button { border-left: 1px solid var(--border); }
+.currency-toggle button.active { background: var(--accent); color: #fff; }
+
+#summaryCards { display: flex; gap: 12px; margin-bottom: 16px; }
+#summaryCards .stat { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+#summaryCards .stat .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+#summaryCards .stat .value { font-size: 18px; font-weight: 700; }
+
+/* 두 도넛을 동시에 보여주면 legend 길이 차이 때문에 크기/정렬이 서로 달라 보여서,
+   탭으로 하나씩만 보여주는 방식으로 바꿈 - 비교할 대상이 없어지므로 문제 자체가 사라짐. */
+.chart-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.chart-tabs .chart-tab {
+  flex: 1;
+  padding: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.chart-tabs .chart-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chart-tabs .chart-tab:not(.active):hover { color: var(--text); border-color: var(--muted); }
+.chart-wrap { position: relative; height: 260px; } /* 두 차트가 항상 같은 크기로 그려지도록 고정 높이 */
+.chart-wrap canvas { width: 100% !important; height: 100% !important; }
+
+.profit { color: var(--profit); }
+.muted { color: var(--muted); }
+.error-banner {
+  display: none; color: var(--danger); background: var(--card); border: 1px solid var(--danger);
+  border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px;
+}
+.loss { color: var(--danger); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+tbody tr:last-child td { border-bottom: none; }
+.empty-row td { color: var(--muted); text-align: left; }
+
+details.settings summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+details.settings summary:hover { color: var(--text); }
+.cash-symbol-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+.cash-symbol-row .name { color: var(--muted); }
+.cash-symbol-row .unheld-tag { color: var(--muted); font-size: 11px; }
+.cash-symbol-row button.unset {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 5px; padding: 2px 8px; font-size: 11px; cursor: pointer; margin-left: auto;
+}
+.cash-symbol-row button.unset:hover { color: var(--danger); border-color: var(--danger); }
+#saveCashSymbolsBtn {
+  margin-top: 12px; padding: 7px 14px; background: var(--accent); color: #fff;
+  border: none; border-radius: 6px; font-size: 13px; cursor: pointer;
+}
+#saveCashSymbolsBtn:disabled { opacity: 0.6; cursor: default; }
+#cashSymbolsSaved { color: var(--muted); font-size: 12px; margin-left: 10px; display: none; }
+
+.rb-category-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr 80px auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+}
+.rb-category-row input {
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  width: 100%;
+}
+.rb-category-row input:focus { outline: none; border-color: var(--accent); }
+/* rb-category-row 전용이 아니라 어디서든 쓰는 공용 삭제 버튼 스타일(ma-rule-row 등도 재사용) */
+button.rb-remove {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 5px; padding: 4px 8px; font-size: 11px; cursor: pointer;
+}
+button.rb-remove:hover { color: var(--danger); border-color: var(--danger); }
+.rb-add {
+  margin-top: 8px; background: transparent; border: 1px dashed var(--border); color: var(--muted);
+  border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; width: 100%;
+}
+.rb-add:hover { color: var(--text); border-color: var(--muted); }
+.rb-rest-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.rb-rest-row input { width: 80px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+.rb-hint { color: var(--muted); font-size: 11px; }
+.rb-sum { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.rb-sum.warn { color: var(--danger); }
+.rb-error { display: none; color: var(--danger); font-size: 12px; margin-bottom: 8px; }
+.rb-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.rb-actions button { padding: 7px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+#saveRebalanceBtn { background: var(--accent); color: #fff; border: none; }
+#saveRebalanceBtn:disabled { opacity: 0.6; cursor: default; }
+#resetRebalanceBtn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+#resetRebalanceBtn:hover { color: var(--text); border-color: var(--muted); }
+#rebalanceSaved { color: var(--muted); font-size: 12px; display: none; }
+
+.watchlist-search { position: relative; margin-bottom: 14px; }
+.watchlist-search input {
+  width: 100%; padding: 9px 10px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font-size: 13px;
+}
+.watchlist-search input:focus { outline: none; border-color: var(--accent); }
+.watchlist-suggestions {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  max-height: 220px; overflow-y: auto;
+}
+.watchlist-suggestions .item {
+  display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px;
+  cursor: pointer; font-size: 13px;
+}
+.watchlist-suggestions .item:hover { background: var(--bg); }
+.watchlist-suggestions .item .sym { color: var(--muted); font-size: 12px; }
+.watchlist-suggestions .empty { padding: 8px 12px; color: var(--muted); font-size: 12px; }
+.watchlist-remove {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 5px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+}
+.watchlist-remove:hover { color: var(--danger); border-color: var(--danger); }
+
+.ma-form-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.ma-form-row select, .ma-form-row input[type="number"] {
+  padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px;
+}
+.ma-form-row input[type="number"] { width: 70px; }
+.ma-form-row button {
+  background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+}
+.ma-form-row button:disabled { opacity: 0.6; cursor: default; }
+.ma-rule-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.ma-rule-row:last-child { border-bottom: none; }
+.ma-rule-row .meta { color: var(--muted); font-size: 12px; }
+.ma-rule-row button.rb-remove { margin-left: auto; }
+#saveMaRulesBtn { background: var(--accent); color: #fff; border: none; }
+#saveMaRulesBtn:disabled { opacity: 0.6; cursor: default; }
+
+.strategy-stage-row {
+  display: grid; grid-template-columns: 110px 130px auto; gap: 8px; align-items: center; padding: 6px 0;
+}
+.strategy-stage-row input {
+  padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; width: 100%;
+}
+.strategy-stage-row input:focus { outline: none; border-color: var(--accent); }
+.strategy-stage-badge {
+  display: inline-block; padding: 2px 7px; margin: 1px 3px 1px 0; border-radius: 4px; font-size: 11px;
+  border: 1px solid var(--border); color: var(--muted);
+}
+.strategy-stage-badge.broken { background: var(--accent); color: #fff; border-color: var(--accent); }
+#saveStrategyConfigBtn { background: var(--accent); color: #fff; border: none; }
+#saveStrategyConfigBtn:disabled { opacity: 0.6; cursor: default; }
+
+.strategy-template-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 6px; margin-bottom: 6px; font-size: 13px; cursor: pointer;
+}
+.strategy-template-row:hover { border-color: var(--muted); }
+.strategy-template-row.active { border-color: var(--accent); }
+.strategy-template-row .meta { color: var(--muted); font-size: 12px; margin-left: auto; }
+.strategy-step-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; margin-bottom: 6px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.strategy-step-row select, .strategy-step-row input {
+  padding: 6px 8px; background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 12px;
+}
+.strategy-step-row .params { display: flex; flex-wrap: wrap; gap: 8px; }
+.strategy-step-row .params label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.strategy-step-row .params input { width: 80px; }
+.strategy-step-row .buy-pct { width: 70px; margin-left: auto; }
+.strategy-step-row .help { flex-basis: 100%; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.strategy-assign-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.strategy-assign-row:last-child { border-bottom: none; }
+.strategy-assign-row .meta { color: var(--muted); font-size: 12px; margin-left: auto; margin-right: 8px; }
+.strategy-assign-row .pos-pct { width: 70px; margin-right: 8px; }
+.strategy-sub { color: var(--muted); font-size: 11px; display: block; }
+#strategyTplCycleEnabled { width: auto; }
+.strategy-cycle-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; color: var(--muted); }
+.strategy-cycle-row input {
+  width: 70px; padding: 5px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px;
+}
+.strategy-table-wrap { overflow-x: auto; margin-top: 16px; }
+.strategy-table-wrap table { margin-top: 0; }
+.strategy-table-wrap td { vertical-align: top; }
+.strategy-badges { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.strategy-badges .strategy-stage-badge { margin: 0; }
+/* 페이지 탭 (포트폴리오 / 주간 리포트) */
+#connectedView.wide { max-width: 1280px; }
+.page-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.page-tabs .page-tab {
+  background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted);
+  padding: 8px 14px; font-size: 14px; cursor: pointer; margin-bottom: -1px;
+}
+.page-tabs .page-tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.page-tabs .page-tab:not(.active):hover { color: var(--text); }
+
+/* 주간 리포트 */
+.wr-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.wr-head .period { font-size: 15px; font-weight: 600; }
+.wr-head .period .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 8px; }
+.wr-head button {
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+}
+.wr-head button:hover { color: var(--text); border-color: var(--muted); }
+.wr-head button:disabled { opacity: 0.6; cursor: default; }
+.wr-status { color: var(--muted); font-size: 13px; padding: 12px 0; }
+.wr-status.error { color: var(--danger); }
+.wr-legend { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 8px; }
+.wr-legend b { color: var(--text); font-weight: 500; }
+.wr-summary { font-size: 13px; line-height: 1.8; }
+.wr-summary .label { color: var(--muted); display: inline-block; min-width: 150px; }
+.wr-summary .none { color: var(--muted); }
+.wr-scroll { overflow-x: auto; }
+.wr-table td.nm .sym { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.wr-table td.nm .stale { color: var(--danger); font-size: 11px; margin-left: 6px; }
+.wr-table td.broken-all { background: rgba(230, 103, 103, 0.16); }
+.wr-table td.broken-some { background: rgba(234, 179, 8, 0.14); }
+.wr-table td.err { color: var(--danger); text-align: left; }
+.wr-cross { font-size: 12px; margin-right: 4px; }
+.wr-cross.up { color: var(--profit); }
+.wr-cross.down { color: var(--danger); }
+.wr-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+.wr-account { margin-top: 10px; font-size: 14px; }
+.wr-account b { font-size: 16px; }
+ul.wr-comments { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
+ul.wr-comments li::marker { color: var(--accent); }
+
+/* 주간 리포트 설정 */
+.wr-common-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); margin: 12px 0; }
+.wr-common-row input, .wr-group-head input, .wr-group-head select, .wr-item-row input, .wr-item-row select {
+  padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px;
+}
+.wr-common-row input:focus, .wr-group-head input:focus, .wr-item-row input:focus { outline: none; border-color: var(--accent); }
+.wr-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-top: 10px; }
+.wr-group-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.wr-group-head input { flex: 1; min-width: 160px; }
+.wr-item-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.wr-item-row input.sym { width: 110px; text-transform: uppercase; }
+.wr-item-row input.lbl { flex: 1; min-width: 120px; }
+.wr-group button.rb-add { width: auto; }
+#wrSaveBtn { background: var(--accent); color: #fff; border: none; }
+#wrSaveBtn:disabled { opacity: 0.6; cursor: default; }
+#wrResetBtn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+#wrResetBtn:hover { color: var(--text); border-color: var(--muted); }
+#wrSaved { color: var(--muted); font-size: 12px; display: none; }

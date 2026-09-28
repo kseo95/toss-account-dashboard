@@ -7,6 +7,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from helpers import server
+from helpers import portfolio, server, storage, strategy, watch, weekly_report
 
 HOST_HEADER = "127.0.0.1:8767"  # ALLOWED_HOSTS 검사를 통과하는 값 (실제 포트와 무관)
 
@@ -38,107 +39,107 @@ class TempDataDirMixin:
             "BASE_DIR": self.base, "DATA_DIR": data, "USERS_DIR": data / "users",
             "SERVER_SECRET_FILE": data / "server_secret", "LEGACY_MIGRATED_MARKER": data / "legacy_migrated",
         }.items():
-            p = mock.patch.object(server, name, value)
+            p = mock.patch.object(storage, name, value)
             p.start()
             self.addCleanup(p.stop)
 
 
 class UserIdTest(TempDataDirMixin, unittest.TestCase):
     def test_stable_and_distinct(self):
-        a1 = server.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
-        a2 = server.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
-        b = server.user_id_for_accounts([{"accountNo": "222", "accountSeq": 1}])
+        a1 = storage.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
+        a2 = storage.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
+        b = storage.user_id_for_accounts([{"accountNo": "222", "accountSeq": 1}])
         self.assertEqual(a1, a2)
         self.assertNotEqual(a1, b)
-        self.assertRegex(a1, server.USER_ID_PATTERN)
+        self.assertRegex(a1, storage.USER_ID_PATTERN)
         self.assertNotIn("111", a1)
 
     def test_uses_smallest_account_seq(self):
-        both = server.user_id_for_accounts([{"accountNo": "999", "accountSeq": 2}, {"accountNo": "111", "accountSeq": 1}])
-        self.assertEqual(both, server.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}]))
+        both = storage.user_id_for_accounts([{"accountNo": "999", "accountSeq": 2}, {"accountNo": "111", "accountSeq": 1}])
+        self.assertEqual(both, storage.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}]))
 
     def test_no_account_raises(self):
         with self.assertRaises(ValueError):
-            server.user_id_for_accounts([])
+            storage.user_id_for_accounts([])
         with self.assertRaises(ValueError):
-            server.user_id_for_accounts([{"accountNo": "", "accountSeq": 1}])
+            storage.user_id_for_accounts([{"accountNo": "", "accountSeq": 1}])
 
     def test_secret_file_is_private_and_reused(self):
-        server.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
-        mode = stat.S_IMODE(os.stat(server.SERVER_SECRET_FILE).st_mode)
+        storage.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
+        mode = stat.S_IMODE(os.stat(storage.SERVER_SECRET_FILE).st_mode)
         self.assertEqual(mode, 0o600)
-        before = server.SERVER_SECRET_FILE.read_text()
-        server.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
-        self.assertEqual(server.SERVER_SECRET_FILE.read_text(), before)
+        before = storage.SERVER_SECRET_FILE.read_text()
+        storage.user_id_for_accounts([{"accountNo": "111", "accountSeq": 1}])
+        self.assertEqual(storage.SERVER_SECRET_FILE.read_text(), before)
 
     def test_store_for_rejects_bad_ids(self):
         for bad in ["../x", "ABC", "a" * 23, ""]:
             with self.assertRaises(ValueError):
-                server.store_for({"user_id": bad})
+                storage.store_for({"user_id": bad})
 
 
 class StoreRoundTripTest(TempDataDirMixin, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.store = server.UserStore(server.USERS_DIR / ("a" * 24))
+        self.store = storage.UserStore(storage.USERS_DIR / ("a" * 24))
 
     def test_missing_files_give_defaults(self):
-        self.assertEqual(server.load_watchlist(self.store), [])
-        self.assertEqual(server.load_cash_symbols(self.store), [])
-        self.assertEqual(server.load_ma_rules(self.store), [])
-        self.assertEqual(server.load_strategy_state(self.store), {})
-        self.assertEqual(server.load_rebalance_config(self.store)["default_rest_target_pct"], 5.0)
-        self.assertEqual(server.load_weekly_report_config(self.store), server.default_weekly_report_config())
-        self.assertIn("templates", server.load_strategy_templates(self.store))
+        self.assertEqual(watch.load_watchlist(self.store), [])
+        self.assertEqual(portfolio.load_cash_symbols(self.store), [])
+        self.assertEqual(watch.load_ma_rules(self.store), [])
+        self.assertEqual(strategy.load_strategy_state(self.store), {})
+        self.assertEqual(portfolio.load_rebalance_config(self.store)["default_rest_target_pct"], 5.0)
+        self.assertEqual(weekly_report.load_weekly_report_config(self.store), weekly_report.default_weekly_report_config())
+        self.assertIn("templates", strategy.load_strategy_templates(self.store))
 
     def test_round_trips_create_user_dir(self):
-        server.save_watchlist(self.store, ["AAPL"])
-        server.save_cash_symbols(self.store, ["SGOV"])
-        server.save_rebalance_config(self.store, [{"label": "x", "symbols": ["A"], "target_pct": 10.0}], 3.0, 40.0)
-        server.save_strategy_state(self.store, {"A": {"broken_step_ids": ["s1"], "recovered": False, "multiplier_triggered": False}})
-        self.assertEqual(server.load_watchlist(self.store), ["AAPL"])
-        self.assertEqual(server.load_cash_symbols(self.store), ["SGOV"])
-        self.assertEqual(server.load_rebalance_config(self.store)["krw_target_pct"], 40.0)
-        self.assertEqual(server.load_strategy_state(self.store)["A"]["broken_step_ids"], ["s1"])
+        watch.save_watchlist(self.store, ["AAPL"])
+        portfolio.save_cash_symbols(self.store, ["SGOV"])
+        portfolio.save_rebalance_config(self.store, [{"label": "x", "symbols": ["A"], "target_pct": 10.0}], 3.0, 40.0)
+        strategy.save_strategy_state(self.store, {"A": {"broken_step_ids": ["s1"], "recovered": False, "multiplier_triggered": False}})
+        self.assertEqual(watch.load_watchlist(self.store), ["AAPL"])
+        self.assertEqual(portfolio.load_cash_symbols(self.store), ["SGOV"])
+        self.assertEqual(portfolio.load_rebalance_config(self.store)["krw_target_pct"], 40.0)
+        self.assertEqual(strategy.load_strategy_state(self.store)["A"]["broken_step_ids"], ["s1"])
         self.assertFalse(list(self.store.root.glob("*.tmp")), "임시 파일이 남으면 안 됨")
 
     def test_corrupted_file_falls_back(self):
         self.store.root.mkdir(parents=True)
-        self.store.path(server.WATCHLIST_FILE).write_text("{깨짐", encoding="utf-8")
-        self.store.path(server.WEEKLY_REPORT_FILE).write_text('{"ma_periods": "x"}', encoding="utf-8")
-        self.assertEqual(server.load_watchlist(self.store), [])
-        self.assertEqual(server.load_weekly_report_config(self.store), server.default_weekly_report_config())
+        self.store.path(watch.WATCHLIST_FILE).write_text("{깨짐", encoding="utf-8")
+        self.store.path(weekly_report.WEEKLY_REPORT_FILE).write_text('{"ma_periods": "x"}', encoding="utf-8")
+        self.assertEqual(watch.load_watchlist(self.store), [])
+        self.assertEqual(weekly_report.load_weekly_report_config(self.store), weekly_report.default_weekly_report_config())
 
     def test_default_strategy_templates_not_shared_between_loads(self):
-        t1 = server.load_strategy_templates(self.store)
+        t1 = strategy.load_strategy_templates(self.store)
         t1["assignments"]["AAPL"] = "ma-default"
-        self.assertEqual(server.load_strategy_templates(self.store)["assignments"], {})
+        self.assertEqual(strategy.load_strategy_templates(self.store)["assignments"], {})
 
 
 class MigrationTest(TempDataDirMixin, unittest.TestCase):
     def test_moves_legacy_files_once_to_first_user(self):
         (self.base / "watchlist.json").write_text(json.dumps({"symbols": ["TLT"]}), encoding="utf-8")
-        first = server.UserStore(server.USERS_DIR / ("a" * 24))
-        second = server.UserStore(server.USERS_DIR / ("b" * 24))
-        self.assertEqual(server.migrate_legacy_files(first), ["watchlist.json"])
+        first = storage.UserStore(storage.USERS_DIR / ("a" * 24))
+        second = storage.UserStore(storage.USERS_DIR / ("b" * 24))
+        self.assertEqual(storage.migrate_legacy_files(first), ["watchlist.json"])
         self.assertFalse((self.base / "watchlist.json").exists())
-        self.assertEqual(server.load_watchlist(first), ["TLT"])
-        self.assertEqual(server.migrate_legacy_files(second), [])
-        self.assertEqual(server.load_watchlist(second), [])
+        self.assertEqual(watch.load_watchlist(first), ["TLT"])
+        self.assertEqual(storage.migrate_legacy_files(second), [])
+        self.assertEqual(watch.load_watchlist(second), [])
 
     def test_does_not_overwrite_existing_user_file(self):
         (self.base / "watchlist.json").write_text(json.dumps({"symbols": ["OLD"]}), encoding="utf-8")
-        store = server.UserStore(server.USERS_DIR / ("a" * 24))
-        server.save_watchlist(store, ["NEW"])
-        self.assertEqual(server.migrate_legacy_files(store), [])
-        self.assertEqual(server.load_watchlist(store), ["NEW"])
+        store = storage.UserStore(storage.USERS_DIR / ("a" * 24))
+        watch.save_watchlist(store, ["NEW"])
+        self.assertEqual(storage.migrate_legacy_files(store), [])
+        self.assertEqual(watch.load_watchlist(store), ["NEW"])
 
 
 class HttpTest(TempDataDirMixin, unittest.TestCase):
     def setUp(self):
         super().setUp()
         server._sessions.clear()
-        server._weekly_report_cache.clear()
+        weekly_report._weekly_report_cache.clear()
         tokens = {tok: acct for tok, acct in FAKE_USERS.values()}
 
         def fake_token(app_key, app_secret):
@@ -224,7 +225,7 @@ class HttpTest(TempDataDirMixin, unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/watchlist", {"symbols": ["MSFT"]}, cookie=b)[0], 200)
         self.assertEqual([i["symbol"] for i in self.request("GET", "/api/watchlist", cookie=a)[1]["items"]], ["AAPL"])
         self.assertEqual([i["symbol"] for i in self.request("GET", "/api/watchlist", cookie=b)[1]["items"]], ["MSFT"])
-        user_dirs = [p.name for p in server.USERS_DIR.iterdir()]
+        user_dirs = [p.name for p in storage.USERS_DIR.iterdir()]
         self.assertEqual(len(user_dirs), 2)
         for name in user_dirs:
             self.assertNotIn("11100000001", name)
@@ -264,6 +265,47 @@ class HttpTest(TempDataDirMixin, unittest.TestCase):
         cfg["groups"][0]["items"] = [{"symbol": f"S{i}", "label": "가" * 30, "kind": "price"} for i in range(40)]
         self.assertGreater(len(json.dumps({"config": cfg}).encode()), 8192)
         self.assertEqual(self.request("POST", "/api/weekly-report-config", {"config": cfg}, cookie=a)[0], 200)
+
+    def raw_get(self, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path, headers={"Host": HOST_HEADER})
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        return resp.status, resp.getheader("Content-Type"), body
+
+    def test_serves_dashboard_and_static_files_only(self):
+        status, ctype, body = self.raw_get("/")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", ctype)
+        for src in re.findall(r'(?:src|href)="(/static/[^"]+)"', body.decode()):
+            with self.subTest(src=src):
+                status, ctype, _ = self.raw_get(src)
+                self.assertEqual(status, 200)
+        for bad in ["/static/../server.py", "/static/%2e%2e/server.py", "/static/js/nope.js", "/static/../data/server_secret"]:
+            with self.subTest(bad=bad):
+                self.assertEqual(self.raw_get(bad)[0], 404)
+
+    def test_bad_json_bodies(self):
+        cookie = self.login("key-a")
+        self.assertEqual(self.request("POST", "/api/watchlist", cookie=cookie, raw=b"[1, 2]")[0], 400)
+        self.assertEqual(self.request("POST", "/api/watchlist", cookie=cookie, raw=b"{bad")[0], 400)
+        status, payload, _ = self.request("POST", "/api/cash-symbols", {"symbols": "SGOV"}, cookie=cookie)
+        self.assertEqual((status, payload["error"]), (400, "symbols는 배열이어야 합니다."))
+        self.assertEqual(self.request("GET", "/api/nope", cookie=cookie)[0], 404)
+
+    def test_account_snapshot_is_shared_and_expires(self):
+        cookie = self.login("key-a")
+        snap = {"usd_krw": 1000.0, "cash_krw": 100.0, "cash_usd": 0.0, "items": []}
+        with mock.patch.object(server, "fetch_account_snapshot", return_value=snap) as fetch, \
+                mock.patch.object(portfolio, "get_cached_usd_jpy_quote", return_value=None):
+            self.assertEqual(self.request("GET", "/api/holdings", cookie=cookie)[1]["totals"]["eval_krw"], 100.0)
+            self.request("GET", "/api/holdings", cookie=cookie)
+            self.assertEqual(fetch.call_count, 1, "SNAPSHOT_TTL 안에서는 다시 받지 않음")
+            session = next(iter(server._sessions.values()))
+            session["snapshot"] = (session["snapshot"][0] - server.SNAPSHOT_TTL - 1, snap)
+            self.request("GET", "/api/holdings", cookie=cookie)
+            self.assertEqual(fetch.call_count, 2)
 
     def test_logout(self):
         a = self.login("key-a")

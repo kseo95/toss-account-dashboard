@@ -1,4 +1,4 @@
-"""테스트 공용 도우미: server 모듈 import 경로 설정 + 가짜 시세 데이터 생성."""
+"""테스트 공용 도우미: 앱 모듈 import 경로 설정 + 가짜 시세 데이터 생성."""
 from __future__ import annotations
 
 import sys
@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 warnings.filterwarnings("ignore")  # urllib3 LibreSSL 경고 등
 
-import server  # noqa: E402
+import common, portfolio, server, storage, strategy, toss_api, watch, weekly_report  # noqa: E402,F401
 
 FIRST_MONDAY = date(2020, 1, 6)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from helpers import server
+from helpers import common, portfolio, watch
 
 
 def stock(sym, name, cur, ev):
@@ -18,7 +18,7 @@ class ComputeRebalanceTest(unittest.TestCase):
                        "default_rest_target_pct": 5.0, "krw_target_pct": 30.0}
 
     def test_categories_rest_and_cash_merge(self):
-        result = {r["label"]: r for r in server.compute_rebalance(self.rows, 100.0, {"SGOV"}, 1000.0, self.config)}
+        result = {r["label"]: r for r in portfolio.compute_rebalance(self.rows, 100.0, {"SGOV"}, 1000.0, self.config)}
         self.assertAlmostEqual(result["묶음"]["current_pct"], 60.0)
         self.assertEqual(result["묶음"]["target_pct"], 50.0)
         self.assertAlmostEqual(result["씨"]["current_pct"], 10.0)
@@ -28,14 +28,14 @@ class ComputeRebalanceTest(unittest.TestCase):
         self.assertEqual(len(result), 3)
 
     def test_zero_total_does_not_divide_by_zero(self):
-        for r in server.compute_rebalance(self.rows, 0.0, set(), 0.0, self.config):
+        for r in portfolio.compute_rebalance(self.rows, 0.0, set(), 0.0, self.config):
             self.assertEqual(r["current_pct"], 0.0)
 
 
 class CurrencySplitTest(unittest.TestCase):
     def test_split_includes_cash(self):
         rows = [stock("A", "A", "USD", 600.0), stock("K", "K", "KRW", 200.0)]
-        s = server.compute_currency_split(rows, cash_krw_amt=100.0, cash_usd_amt=0.1, usd_krw=1000.0, total_eval=1000.0, krw_target_pct=30.0)
+        s = portfolio.compute_currency_split(rows, cash_krw_amt=100.0, cash_usd_amt=0.1, usd_krw=1000.0, total_eval=1000.0, krw_target_pct=30.0)
         self.assertAlmostEqual(s["krw_pct"], 30.0)
         self.assertAlmostEqual(s["usd_pct"], 70.0)
         self.assertEqual(s["usd_target_pct"], 70.0)
@@ -43,7 +43,7 @@ class CurrencySplitTest(unittest.TestCase):
 
 class ValidateRebalanceTargetsTest(unittest.TestCase):
     def test_valid(self):
-        clean, err = server.validate_rebalance_targets([{"label": " 묶음 ", "symbols": ["aaa", "AAA", "bbb"], "target_pct": 10}])
+        clean, err = portfolio.validate_rebalance_targets([{"label": " 묶음 ", "symbols": ["aaa", "AAA", "bbb"], "target_pct": 10}])
         self.assertIsNone(err)
         self.assertEqual(clean, [{"label": "묶음", "symbols": ["AAA", "BBB"], "target_pct": 10.0}])
 
@@ -58,13 +58,13 @@ class ValidateRebalanceTargetsTest(unittest.TestCase):
         ]
         for targets, frag in cases:
             with self.subTest(frag=frag):
-                _, err = server.validate_rebalance_targets(targets)
+                _, err = portfolio.validate_rebalance_targets(targets)
                 self.assertIn(frag, err)
 
 
 class ValidateMaRulesTest(unittest.TestCase):
     def test_valid(self):
-        clean, err = server.validate_ma_rules([{"symbol": "tlt", "interval": "week", "period": 60, "proximity_pct": 2}])
+        clean, err = watch.validate_ma_rules([{"symbol": "tlt", "interval": "week", "period": 60, "proximity_pct": 2}])
         self.assertIsNone(err)
         self.assertEqual(clean[0]["symbol"], "TLT")
 
@@ -78,15 +78,15 @@ class ValidateMaRulesTest(unittest.TestCase):
         ]
         for rule, frag in cases:
             with self.subTest(frag=frag):
-                _, err = server.validate_ma_rules([rule])
+                _, err = watch.validate_ma_rules([rule])
                 self.assertIn(frag, err)
 
 
 class ToFloatTest(unittest.TestCase):
     def test_to_float(self):
-        self.assertEqual(server.to_float("1.5"), 1.5)
-        self.assertEqual(server.to_float(None), 0.0)
-        self.assertEqual(server.to_float("x", -1), -1)
+        self.assertEqual(common.to_float("1.5"), 1.5)
+        self.assertEqual(common.to_float(None), 0.0)
+        self.assertEqual(common.to_float("x", -1), -1)
 
 
 if __name__ == "__main__":

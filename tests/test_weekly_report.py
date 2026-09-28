@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from helpers import hist, server, weekly_bars
+from helpers import hist, weekly_bars, weekly_report as wr
 
 NY = ZoneInfo("America/New_York")
 PERIODS = [60, 120, 200, 240]
@@ -17,18 +17,18 @@ class WeeklySeriesTest(unittest.TestCase):
     def test_groups_by_iso_week_and_takes_last_trading_day(self):
         mon = date(2026, 9, 21)
         bars = [(mon, 1, 1), (mon + timedelta(days=4), 5, 5), (mon + timedelta(days=7), 7, 7)]
-        self.assertEqual(server._weekly_series(bars, 1), [5, 7])
+        self.assertEqual(wr._weekly_series(bars, 1), [5, 7])
 
     def test_year_boundary_uses_iso_week(self):
         # 2025-12-29(월)~2026-01-02(금)은 ISO 기준 같은 주(2026-W01)
         bars = [(date(2025, 12, 29), 1, 1), (date(2026, 1, 2), 2, 2)]
-        self.assertEqual(server._weekly_series(bars, 1), [2])
+        self.assertEqual(wr._weekly_series(bars, 1), [2])
 
 
 class ReportWeekEndTest(unittest.TestCase):
     def check(self, ny_time: str, expected: str):
         now = datetime.fromisoformat(ny_time).replace(tzinfo=NY)
-        self.assertEqual(server.report_week_end(now), date.fromisoformat(expected), ny_time)
+        self.assertEqual(wr.report_week_end(now), date.fromisoformat(expected), ny_time)
 
     def test_friday_during_session_is_previous_week(self):
         self.check("2026-09-25 15:00", "2026-09-18")
@@ -48,7 +48,7 @@ class ReportWeekEndTest(unittest.TestCase):
 class ComputeSymbolWeekTest(unittest.TestCase):
     def compute(self, closes, **kw):
         h = hist(closes, **kw)
-        return server.compute_symbol_week(h, h["bars"][-1][0], PERIODS)
+        return wr.compute_symbol_week(h, h["bars"][-1][0], PERIODS)
 
     def test_uptrend_all_mas_below_price(self):
         m = self.compute(list(range(1, 301)))
@@ -117,7 +117,7 @@ class ComputeSymbolWeekTest(unittest.TestCase):
         bars = weekly_bars(closes)
         end = bars[-1][0]
         divs = [(end - timedelta(days=10), 1.0), (end - timedelta(days=200), 1.0), (end - timedelta(days=400), 5.0)]
-        m = server.compute_symbol_week({"bars": bars, "divs": divs, "name": "D"}, end, PERIODS)
+        m = wr.compute_symbol_week({"bars": bars, "divs": divs, "name": "D"}, end, PERIODS)
         self.assertAlmostEqual(m["dividend_ttm"], 2.0)
         self.assertAlmostEqual(m["dividend_yield_pct"], 4.0)
 
@@ -127,14 +127,14 @@ class ComputeSymbolWeekTest(unittest.TestCase):
     def test_bars_after_end_are_ignored(self):
         h = hist(list(range(1, 11)))
         end = h["bars"][-3][0]
-        m = server.compute_symbol_week(h, end, PERIODS)
+        m = wr.compute_symbol_week(h, end, PERIODS)
         self.assertEqual(m["close"], 8)
         self.assertEqual(m["last_date"], end.isoformat())
 
     def test_stale_when_no_trade_in_report_week(self):
         h = hist(list(range(1, 11)))
         end = h["bars"][-1][0] + timedelta(days=7)
-        self.assertTrue(server.compute_symbol_week(h, end, PERIODS)["stale"])
+        self.assertTrue(wr.compute_symbol_week(h, end, PERIODS)["stale"])
 
     def test_needs_two_weeks(self):
         with self.assertRaises(ValueError):
@@ -143,37 +143,37 @@ class ComputeSymbolWeekTest(unittest.TestCase):
 
 class NormalizeConfigTest(unittest.TestCase):
     def default(self):
-        return copy.deepcopy(server.default_weekly_report_config())
+        return copy.deepcopy(wr.default_weekly_report_config())
 
     def assertRejects(self, cfg, fragment):
         with self.assertRaises(ValueError) as cm:
-            server._normalize_weekly_report_config(cfg)
+            wr._normalize_weekly_report_config(cfg)
         self.assertIn(fragment, str(cm.exception))
 
     def test_default_is_valid(self):
-        cfg = server._normalize_weekly_report_config(self.default())
+        cfg = wr._normalize_weekly_report_config(self.default())
         self.assertEqual(cfg["ma_periods"], [60, 120, 200, 240])
         self.assertEqual(sum(g["type"] == "my_account" for g in cfg["groups"]), 1)
 
     def test_old_file_without_new_fields_gets_defaults(self):
         cfg = self.default()
         del cfg["comment_rules"], cfg["fx_symbol"]
-        clean = server._normalize_weekly_report_config(cfg)
-        self.assertEqual(clean["comment_rules"], server.WEEKLY_REPORT_COMMENT_DEFAULTS)
+        clean = wr._normalize_weekly_report_config(cfg)
+        self.assertEqual(clean["comment_rules"], wr.WEEKLY_REPORT_COMMENT_DEFAULTS)
         self.assertEqual(clean["fx_symbol"], "KRW=X")
 
     def test_periods_sorted_and_symbols_uppercased(self):
         cfg = self.default()
         cfg["ma_periods"] = [240, 60]
         cfg["groups"][0]["items"][0]["symbol"] = " ief "
-        clean = server._normalize_weekly_report_config(cfg)
+        clean = wr._normalize_weekly_report_config(cfg)
         self.assertEqual(clean["ma_periods"], [60, 240])
         self.assertEqual(clean["groups"][0]["items"][0]["symbol"], "IEF")
 
     def test_empty_label_falls_back_to_symbol(self):
         cfg = self.default()
         cfg["groups"][0]["items"][0]["label"] = ""
-        self.assertEqual(server._normalize_weekly_report_config(cfg)["groups"][0]["items"][0]["label"],
+        self.assertEqual(wr._normalize_weekly_report_config(cfg)["groups"][0]["items"][0]["label"],
                          cfg["groups"][0]["items"][0]["symbol"])
 
     def test_rejections(self):
@@ -217,35 +217,35 @@ def row(label, kind="price", **kw):
     return base
 
 
-RULES = dict(server.WEEKLY_REPORT_COMMENT_DEFAULTS)
+RULES = dict(wr.WEEKLY_REPORT_COMMENT_DEFAULTS)
 
 
 class GroupCommentsTest(unittest.TestCase):
     def test_sector_top_and_bottom(self):
         g = {"type": "sector", "rows": [row("A", rel_pct=3.0), row("B", rel_pct=1.0), row("C", rel_pct=-0.5), row("D", rel_pct=-4.0)]}
-        c = server.build_group_comments(g, RULES, "^GSPC", None)
+        c = wr.build_group_comments(g, RULES, "^GSPC", None)
         self.assertIn("^GSPC 대비 강세: A +3.00%p, B +1.00%p", c)
         self.assertIn("^GSPC 대비 약세: D -4.00%p, C -0.50%p", c)
 
     def test_sector_skips_when_too_few_rows(self):
         g = {"type": "sector", "rows": [row("A", rel_pct=3.0), row("B", rel_pct=-1.0)]}
-        self.assertFalse(any("대비" in x for x in server.build_group_comments(g, RULES, "^GSPC", None)))
+        self.assertFalse(any("대비" in x for x in wr.build_group_comments(g, RULES, "^GSPC", None)))
 
     def test_dividend_below_rate_count(self):
         g = {"type": "dividend", "rows": [row("A", spread_pct=1.0), row("B", spread_pct=-1.0), row("C", spread_pct=None)]}
-        c = server.build_group_comments(g, RULES, "^GSPC", {"symbol": "^TNX", "value": 5.18})
+        c = wr.build_group_comments(g, RULES, "^GSPC", {"symbol": "^TNX", "value": 5.18})
         self.assertIn("2개 중 1개가 ^TNX(5.18%)보다 배당률이 낮음", c)
 
     def test_fx_opposite_direction(self):
         g = {"type": "fx_account", "account_pct": 0.32,
              "rows": [row("S&P", change_pct=1.21, mas=[]), row("원/달러", kind="level", change_pct=-0.88, mas=[])]}
-        c = server.build_group_comments(g, RULES, "^GSPC", None)
+        c = wr.build_group_comments(g, RULES, "^GSPC", None)
         self.assertIn("S&P +1.21%였지만 원/달러 -0.88%로 원화 기준 +0.32%", c)
 
     def test_fx_same_direction(self):
         g = {"type": "fx_account", "account_pct": 3.02,
              "rows": [row("S&P", change_pct=2.0, mas=[]), row("원/달러", kind="level", change_pct=1.0, mas=[])]}
-        c = server.build_group_comments(g, RULES, "^GSPC", None)
+        c = wr.build_group_comments(g, RULES, "^GSPC", None)
         self.assertTrue(any("확대" in x for x in c))
 
     def test_trend_last_line_and_near(self):
@@ -255,7 +255,7 @@ class GroupCommentsTest(unittest.TestCase):
             row("LAST", broken=[60, 120, 200], nearest={"period": 240, "dist_pct": 0.5}),
             row("RATE", kind="rate", ma_alignment="up"),  # 금리는 추세 코멘트 대상 아님
         ]}
-        c = server.build_group_comments(g, RULES, "^GSPC", None)
+        c = wr.build_group_comments(g, RULES, "^GSPC", None)
         self.assertIn("하락 추세 (역배열 + 모든 선 아래) 1/4: DOWN", c)
         self.assertIn("상승 추세 (정배열 + 모든 선 위) 1/4: UP", c)
         self.assertIn("마지막 선 하나만 남음: LAST — 240주선", c)
@@ -263,13 +263,13 @@ class GroupCommentsTest(unittest.TestCase):
 
     def test_near_threshold_is_configurable(self):
         g = {"type": "basic", "rows": [row("X", nearest={"period": 60, "dist_pct": 1.4})]}
-        self.assertFalse(any("시험 중" in x for x in server.build_group_comments(g, RULES, "^GSPC", None)))
+        self.assertFalse(any("시험 중" in x for x in wr.build_group_comments(g, RULES, "^GSPC", None)))
         rules = dict(RULES, near_ma_pct=1.5)
-        self.assertTrue(any("시험 중" in x for x in server.build_group_comments(g, rules, "^GSPC", None)))
+        self.assertTrue(any("시험 중" in x for x in wr.build_group_comments(g, rules, "^GSPC", None)))
 
     def test_error_rows_ignored(self):
         g = {"type": "sector", "rows": [{"label": "BAD", "error": "x"}]}
-        self.assertEqual(server.build_group_comments(g, RULES, "^GSPC", None), [])
+        self.assertEqual(wr.build_group_comments(g, RULES, "^GSPC", None), [])
 
 
 class SummaryCommentsTest(unittest.TestCase):
@@ -280,23 +280,23 @@ class SummaryCommentsTest(unittest.TestCase):
             row("ORCL", symbol="ORCL", mas=[{"period": 60, "cross": "down"}, {"period": 120, "cross": None}]),
             row("OK", symbol="OK"),
         ]}
-        c = server.build_summary_comments([g], RULES)
+        c = wr.build_summary_comments([g], RULES)
         self.assertTrue(c[0].startswith("괴리: 공포지수는 평온(VIX 52주 위치 8%)한데 약세 지표 2개(HYG, ORCL)"), c[0])
 
     def test_no_divergence_when_fear_not_calm(self):
         g = {"type": "risk", "rows": [row("VIX", kind="level", symbol="^VIX", position_52w_pct=80.0, mas=[]),
                                       row("HYG", symbol="HYG", broken=PERIODS)]}
-        self.assertFalse(any(x.startswith("괴리") for x in server.build_summary_comments([g], RULES)))
+        self.assertFalse(any(x.startswith("괴리") for x in wr.build_summary_comments([g], RULES)))
 
     def test_single_ma_symbol_not_counted_as_almost_broken(self):
         # MA가 1개뿐인 종목은 "하나 남음"(0/1)으로 치지 않는다
         g = {"type": "risk", "rows": [row("VIX", kind="level", symbol="^VIX", position_52w_pct=5.0, mas=[]),
                                       row("NEW", symbol="NEW", mas=[{"period": 60, "cross": None}], broken=[])]}
-        self.assertFalse(any(x.startswith("괴리") for x in server.build_summary_comments([g], RULES)))
+        self.assertFalse(any(x.startswith("괴리") for x in wr.build_summary_comments([g], RULES)))
 
     def test_last_line_deduped_across_groups(self):
         r = row("HYG", symbol="HYG", broken=[60, 120, 200])
-        c = server.build_summary_comments([{"type": "basic", "rows": [r]}, {"type": "risk", "rows": [r]}], RULES)
+        c = wr.build_summary_comments([{"type": "basic", "rows": [r]}, {"type": "risk", "rows": [r]}], RULES)
         self.assertEqual(c, ["마지막 주봉 MA 하나만 남은 종목: HYG — 240주선"])
 
 
@@ -315,7 +315,7 @@ def fake_histories():
 
 
 def fake_config():
-    return server._normalize_weekly_report_config({
+    return wr._normalize_weekly_report_config({
         "ma_periods": PERIODS, "benchmark": "^GSPC", "rate_symbol": "^TNX", "fx_symbol": "KRW=X",
         "groups": [
             {"title": "섹터", "type": "sector", "items": [{"symbol": "A", "label": "A"}, {"symbol": "B", "label": "B"},
@@ -332,7 +332,7 @@ def fake_config():
 
 class BuildWeeklyReportTest(unittest.TestCase):
     def setUp(self):
-        server._weekly_report_cache.clear()
+        wr._weekly_report_cache.clear()
         self.hists = fake_histories()
         self.calls = []
 
@@ -342,14 +342,14 @@ class BuildWeeklyReportTest(unittest.TestCase):
                 raise ValueError(f"{sym}: 데이터 없음")
             return self.hists[sym]
 
-        patcher = mock.patch.object(server, "get_yahoo_daily_history", side_effect=fake_get)
+        patcher = mock.patch.object(wr, "get_yahoo_daily_history", side_effect=fake_get)
         patcher.start()
         self.addCleanup(patcher.stop)
         end = self.hists["^GSPC"]["bars"][-1][0]
         self.now = datetime.combine(end + timedelta(days=1), datetime.min.time()).replace(hour=10, tzinfo=NY)
 
     def build(self, force=False):
-        return server.build_weekly_report(fake_config(), self.now, force=force)
+        return wr.build_weekly_report(fake_config(), self.now, force=force)
 
     def test_structure_and_numbers(self):
         r = self.build()
@@ -392,18 +392,18 @@ class BuildWeeklyReportTest(unittest.TestCase):
         n = len(self.calls)
         cfg = fake_config()
         cfg["ma_periods"] = [60, 120]
-        server.build_weekly_report(cfg, self.now)
+        wr.build_weekly_report(cfg, self.now)
         self.assertGreater(len(self.calls), n)
 
 
 class TossToYahooSymbolTest(unittest.TestCase):
     def test_mapping(self):
-        self.assertEqual(server.toss_to_yahoo_symbol("005930", "KOSPI", "KRW"), "005930.KS")
-        self.assertEqual(server.toss_to_yahoo_symbol("247540", "KOSDAQ", "KRW"), "247540.KQ")
-        self.assertIsNone(server.toss_to_yahoo_symbol("123456", "KONEX", "KRW"))
-        self.assertIsNone(server.toss_to_yahoo_symbol("123456", None, "KRW"))
-        self.assertEqual(server.toss_to_yahoo_symbol("BRK.B", "NYSE", "USD"), "BRK-B")
-        self.assertEqual(server.toss_to_yahoo_symbol("TLT", None, "USD"), "TLT")
+        self.assertEqual(wr.toss_to_yahoo_symbol("005930", "KOSPI", "KRW"), "005930.KS")
+        self.assertEqual(wr.toss_to_yahoo_symbol("247540", "KOSDAQ", "KRW"), "247540.KQ")
+        self.assertIsNone(wr.toss_to_yahoo_symbol("123456", "KONEX", "KRW"))
+        self.assertIsNone(wr.toss_to_yahoo_symbol("123456", None, "KRW"))
+        self.assertEqual(wr.toss_to_yahoo_symbol("BRK.B", "NYSE", "USD"), "BRK-B")
+        self.assertEqual(wr.toss_to_yahoo_symbol("TLT", None, "USD"), "TLT")
 
 
 class FillAccountGroupsTest(BuildWeeklyReportTest):
@@ -419,7 +419,7 @@ class FillAccountGroupsTest(BuildWeeklyReportTest):
     def test_fill(self):
         self.hists["005930.KS"] = hist([100.0] * 299 + [110.0])
         report = copy.deepcopy(self.build())
-        server.fill_account_groups(report, fake_config(), self.holdings(), {"005930": {"market": "KOSPI"}, "999999": {"market": "KONEX"}})
+        wr.fill_account_groups(report, fake_config(), self.holdings(), {"005930": {"market": "KOSPI"}, "999999": {"market": "KONEX"}})
         g = next(g for g in report["groups"] if g["type"] == "my_account")
         rows = {r["label"]: r for r in g["rows"]}
         fx = report["fx"]["change_pct"]
@@ -447,7 +447,7 @@ class FillAccountGroupsTest(BuildWeeklyReportTest):
         h = self.holdings()
         h["stocks"] = h["stocks"][:2]
         report = copy.deepcopy(self.build())
-        server.fill_account_groups(report, fake_config(), h, {"005930": {"market": "KOSPI"}})
+        wr.fill_account_groups(report, fake_config(), h, {"005930": {"market": "KOSPI"}})
         g = next(g for g in report["groups"] if g["type"] == "my_account")
         self.assertAlmostEqual(g["account"]["week_krw_pct"], sum(r["contribution_pctp"] for r in g["rows"]))
         self.assertTrue(g["comments"][0].startswith("원화 기준 계좌"))
@@ -459,7 +459,7 @@ class FillAccountGroupsTest(BuildWeeklyReportTest):
         report = copy.deepcopy(self.build())
         report["groups"] = [g for g in report["groups"] if g["type"] != "my_account"]
         before = copy.deepcopy(report)
-        server.fill_account_groups(report, fake_config(), self.holdings(), {})
+        wr.fill_account_groups(report, fake_config(), self.holdings(), {})
         self.assertEqual(report, before)
 
 
@@ -476,7 +476,7 @@ class FakeResponse:
 
 class YahooHistoryParseTest(unittest.TestCase):
     def setUp(self):
-        server._yahoo_history_cache.clear()
+        wr._yahoo_history_cache.clear()
 
     def payload(self, offset):
         # KRW=X처럼 UTC 전날 23시에 찍히는 봉 + 같은 날 중복 + None 종가
@@ -491,25 +491,25 @@ class YahooHistoryParseTest(unittest.TestCase):
         }]}}
 
     def test_gmtoffset_shifts_to_local_date_and_dedupes(self):
-        with mock.patch.object(server.requests, "get", return_value=FakeResponse(self.payload(3600))):
-            h = server.get_yahoo_daily_history("KRW=X")
+        with mock.patch.object(wr.requests, "get", return_value=FakeResponse(self.payload(3600))):
+            h = wr.get_yahoo_daily_history("KRW=X")
         self.assertEqual([b[0].isoformat() for b in h["bars"]], ["2026-09-25", "2026-09-26"])
         self.assertEqual(h["bars"][1][1], 1361.0)  # 같은 날짜는 마지막 값
         self.assertEqual(h["divs"], [(date(2026, 9, 25), 0.5)])
         self.assertEqual(h["name"], "USD/KRW")
 
     def test_cache_and_force(self):
-        with mock.patch.object(server.requests, "get", return_value=FakeResponse(self.payload(0))) as g:
-            server.get_yahoo_daily_history("X")
-            server.get_yahoo_daily_history("X")
+        with mock.patch.object(wr.requests, "get", return_value=FakeResponse(self.payload(0))) as g:
+            wr.get_yahoo_daily_history("X")
+            wr.get_yahoo_daily_history("X")
             self.assertEqual(g.call_count, 1)
-            server.get_yahoo_daily_history("X", force=True)
+            wr.get_yahoo_daily_history("X", force=True)
             self.assertEqual(g.call_count, 2)
 
     def test_empty_result_raises(self):
-        with mock.patch.object(server.requests, "get", return_value=FakeResponse({"chart": {"result": None}})):
+        with mock.patch.object(wr.requests, "get", return_value=FakeResponse({"chart": {"result": None}})):
             with self.assertRaises(ValueError):
-                server.get_yahoo_daily_history("NOPE")
+                wr.get_yahoo_daily_history("NOPE")
 
 
 class ValidateSymbolsTest(unittest.TestCase):
@@ -523,8 +523,8 @@ class ValidateSymbolsTest(unittest.TestCase):
                 raise ValueError("x")
             return {}
 
-        with mock.patch.object(server, "get_yahoo_daily_history", side_effect=fake_get):
-            failed = server.validate_weekly_report_symbols(cfg, known={"^GSPC", "^TNX", "KRW=X", "A", "D", "^VIX", "HYG", "BAD"})
+        with mock.patch.object(wr, "get_yahoo_daily_history", side_effect=fake_get):
+            failed = wr.validate_weekly_report_symbols(cfg, known={"^GSPC", "^TNX", "KRW=X", "A", "D", "^VIX", "HYG", "BAD"})
         self.assertEqual(sorted(checked), ["B"])
         self.assertEqual(failed, ["B"])
 
