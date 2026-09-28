@@ -543,10 +543,12 @@ def compute_strategy_rows(token: str, templates: dict, assignments: dict, exclud
     return rows, changed
 
 
-def apply_strategy_sizing(rows: list[dict], position_pct: dict[str, float], holdings: dict) -> None:
+def apply_strategy_sizing(rows: list[dict], position_pct: dict[str, float], holdings: dict,
+                          sell_tax_rate: dict[str, float] | None = None) -> None:
     """목표 비중이 정해진 종목 행에 "지금 얼마를 더 사야(팔아야) 하나"를 붙인다(rows를 직접 수정).
     지금 있어야 할 비중 = 최종 목표 비중 × 진입 목표비율. 부족분 = 총자산 × 그 비중 − 현재 평가금액.
-    총자산은 보유 대시보드와 같은 분모(보유종목 + 예수금)."""
+    총자산은 보유 대시보드와 같은 분모(보유종목 + 예수금). sell_tax_rate(종목별 판 금액 1원당 세금)가 있으면
+    매도 신호에 예상 세금을 붙인다(tax.sell_tax_rate_by_symbol)."""
     total = holdings["totals"]["eval_krw"]
     usd_krw = holdings["usd_krw"]
     held_krw: dict[str, float] = {}
@@ -583,3 +585,7 @@ def apply_strategy_sizing(rows: list[dict], position_pct: dict[str, float], hold
             "next_change_krw": next_krw,
             "next_change_shares": shares(abs(next_krw)),
         }
+        if sell_tax_rate is not None:
+            rate = sell_tax_rate.get(row["symbol"], 0.0)
+            row["sizing"]["sell_now_tax_krw"] = max(0.0, -gap_krw) * rate if row.get("cycle", 1) >= 2 else 0.0
+            row["sizing"]["next_sell_tax_krw"] = max(0.0, -next_krw) * rate

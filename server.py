@@ -33,16 +33,22 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from common import ApiError, normalize_symbols, to_float
+from common import ApiError, normalize_symbols, parallel_map, to_float
+from dividends import estimate_dividends
 from portfolio import (CASH_SYMBOLS_MAX, build_holdings, load_cash_symbols, load_rebalance_config, save_cash_symbols,
                        save_rebalance_config, snapshot_rows, validate_rebalance_targets)
 from storage import UserStore, migrate_legacy_files, store_for, store_for_user, user_id_for_accounts
+from tax import (DEFAULT_TAX_SETTINGS, DOMESTIC_CLASSES, TAX_REFERENCE, estimate_taxes, load_tax_settings,
+                 normalize_tax_settings, save_tax_settings, sell_tax_rate_by_symbol)
 from strategy import (apply_strategy_sizing, compute_strategy_rows, effective_assignments, load_strategy_state,
                       load_strategy_templates, save_strategy_state, save_strategy_templates, validate_strategy_templates)
-from toss_api import fetch_account_snapshot, get_access_token, get_accounts, get_stock_info, lookup_stocks, search_stocks
+from toss_api import (fetch_account_snapshot, get_access_token, get_accounts, get_closed_orders, get_stock_info, lookup_stocks,
+                      search_stocks)
+from trades import fills_from_orders, fx_lookup, realized_gains, summarize_fills
 from watch import (WATCHLIST_MAX, compute_ma_rows, fetch_watchlist_rows, load_ma_rules, load_watchlist, save_ma_rules,
                    save_watchlist, validate_ma_rules)
 from weekly_report import (WEEKLY_REPORT_GROUP_TYPES, WEEKLY_REPORT_ITEM_KINDS, _normalize_weekly_report_config,
+                           get_yahoo_daily_history, toss_to_yahoo_symbol,
                            _weekly_report_symbols, build_weekly_report, default_weekly_report_config, fill_account_groups,
                            load_weekly_report_config, save_weekly_report_config, validate_weekly_report_symbols)
 
@@ -50,6 +56,7 @@ HOST = "127.0.0.1"
 PORT = 8767
 SESSION_COOKIE = "toss_redo_session"
 SESSION_TTL = 60 * 60 * 4  # 4시간 무활동 시 세션 만료
+ORDERS_TTL = 300.0  # 초. 전체 체결 내역(수백 건일 수 있음)은 5분 동안 재사용
 SNAPSHOT_TTL = 15.0  # 초. 토스 계좌 원자료를 이 시간 동안 재사용(한 화면을 그릴 때 보유·전략·리포트가 공유)
 ALLOWED_HOSTS = {f"{HOST}:{PORT}", f"localhost:{PORT}"}
 ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
@@ -100,6 +107,67 @@ def account_snapshot(session: dict) -> dict:
         return data
 
 
+def all_fills(session: dict) -> list[dict]:
+    """모든 계좌의 전체 기간 체결 내역(선입선출 계산에 예전 매수분이 필요해서 전체 기간). ORDERS_TTL 동안 재사용."""
+    with session["snapshot_lock"]:
+        cached = session.get("fills")
+        if cached and time.time() - cached[0] < ORDERS_TTL:
+            return cached[1]
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    fills = []
+    for account in session["accounts"]:
+        seq = account["accountSeq"]
+        fills += fills_from_orders(call_with_reauth(session, lambda token: get_closed_orders(token, seq, "2000-01-01", today)), seq)
+    fills.sort(key=lambda f: f["filled_at"], reverse=True)
+    session["fills"] = (time.time(), fills)
+    return fills
+
+
+def realized_overseas(session: dict, year: int) -> dict:
+    """해외 주식 year년 실현 손익(선입선출, 결제일 환율). 환율은 Yahoo 원/달러 일봉(약 6년치)."""
+    fx = fx_lookup(get_yahoo_daily_history("KRW=X")["bars"])
+    return realized_gains(all_fills(session), fx, year)
+
+
+def dividends_for_year(session: dict, year: int) -> dict:
+    """year년 배당 추정(체결 내역으로 배당락일 보유 수량 × Yahoo 배당 기록). 세션에 5분 캐시."""
+    cache = session.setdefault("dividends", {})
+    cached = cache.get(year)
+    if cached and time.time() - cached[0] < ORDERS_TTL:
+        return cached[1]
+    fills = all_fills(session)
+    held = snapshot_rows(account_snapshot(session))
+    held_qty = {r["심볼"]: r["수량"] for r in held}
+    currency_of = {f["symbol"]: f["currency"] for f in fills} | {r["심볼"]: r["통화"] for r in held}
+    kr = sorted(s for s, c in currency_of.items() if c == "KRW")
+    kr_info = call_with_reauth(session, lambda token: lookup_stocks(token, kr)) if kr else {}
+
+    def history(symbol):
+        ysym = toss_to_yahoo_symbol(symbol, (kr_info.get(symbol) or {}).get("market"), currency_of[symbol])
+        if not ysym:
+            return symbol, None
+        try:
+            return symbol, get_yahoo_daily_history(ysym)["divs"]
+        except (requests.RequestException, ValueError, KeyError):
+            return symbol, None
+
+    divs_of, missing = {}, []
+    for symbol, divs in parallel_map(history, sorted(currency_of), 8):
+        if divs is None:
+            missing.append(symbol)
+        elif divs:
+            divs_of[symbol] = divs
+    fx = fx_lookup(get_yahoo_daily_history("KRW=X")["bars"])
+    result = estimate_dividends(fills, held_qty, currency_of, divs_of, fx, year)
+    if missing:
+        result["notes"].append(f"Yahoo 배당 기록을 못 받은 종목: {', '.join(missing)}")
+    names = call_with_reauth(session, lambda token: lookup_stocks(token, sorted({r["symbol"] for r in result["rows"]})))
+    for r in result["rows"]:
+        r["name"] = (names.get(r["symbol"]) or {}).get("name", r["symbol"])
+    cache[year] = (time.time(), result)
+    return result
+
+
 def ensure_symbols_exist(session: dict, symbols: list[str]) -> None:
     """저장하려는 종목이 토스에 실제로 있는지 확인(real/의 관례). 없으면 ApiError(400)."""
     if not symbols:
@@ -108,6 +176,12 @@ def ensure_symbols_exist(session: dict, symbols: list[str]) -> None:
     missing = [s for s in symbols if s not in info]
     if missing:
         raise ApiError(400, f"존재하지 않는 종목 코드입니다: {', '.join(missing)}")
+
+
+def kr_stock_info(session: dict, holdings: dict) -> dict[str, dict]:
+    """국내 보유종목의 시장 구분(KOSPI/KOSDAQ 등). 세금·주간 리포트가 쓴다."""
+    kr = [r["심볼"] for r in holdings["stocks"] + holdings["cash"]["stocks"] if r["통화"] == "KRW"]
+    return call_with_reauth(session, lambda token: lookup_stocks(token, kr)) if kr else {}
 
 
 def percent_field(data: dict, key: str, what: str) -> float:
@@ -290,9 +364,90 @@ def get_strategy(req: Request):
     total_krw = None
     if data["position_pct"]:  # 금액 계산에 총자산이 필요할 때만
         holdings = build_holdings(snapshot, store)
-        apply_strategy_sizing(rows, data["position_pct"], holdings)
+        taxes = estimate_taxes(holdings, load_tax_settings(store), kr_stock_info(req.session, holdings))
+        apply_strategy_sizing(rows, data["position_pct"], holdings, sell_tax_rate_by_symbol(taxes))
         total_krw = holdings["totals"]["eval_krw"]
     return {"rows": rows, "auto_assigned": auto, "total_krw": total_krw}
+
+
+# ---- 세금 ----
+@route("GET", "/api/tax")
+def get_tax(req: Request):
+    settings = load_tax_settings(req.store)
+    holdings = build_holdings(account_snapshot(req.session), req.store)
+    used = dict(settings)
+    realized_source, realized_note = "manual", None
+    if not settings["use_manual_realized"]:
+        try:
+            realized = realized_overseas(req.session, datetime.now(ZoneInfo("Asia/Seoul")).year)
+            used["realized_overseas_gain_ytd_krw"] = realized["total_gain_krw"]
+            realized_source = "auto"
+            if not realized["complete"]:
+                realized_note = "매입 기록이나 환율이 없는 매도가 있어 일부만 합산했어요. 체결 내역 카드를 확인하세요."
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"[/api/tax] 실현 손익 자동 계산 실패, 입력값 사용: {e}", file=sys.stderr)
+            realized_note = "체결 내역을 불러오지 못해 직접 입력한 값을 썼어요."
+    income_source, income_note = "manual", None
+    if not settings["use_manual_financial_income"]:
+        try:
+            used["financial_income_ytd_krw"] = dividends_for_year(req.session, datetime.now(ZoneInfo("Asia/Seoul")).year)["total_gross_krw"]
+            income_source = "auto"
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"[/api/tax] 배당 추정 실패, 입력값 사용: {e}", file=sys.stderr)
+            income_note = "배당을 추정하지 못해 직접 입력한 값을 썼어요."
+    return {"settings": settings, "default": DEFAULT_TAX_SETTINGS, "classes": DOMESTIC_CLASSES, "reference": TAX_REFERENCE,
+            "realized_source": realized_source, "realized_note": realized_note,
+            "income_source": income_source, "income_note": income_note,
+            **estimate_taxes(holdings, used, kr_stock_info(req.session, holdings))}
+
+
+@route("GET", "/api/trades")
+def get_trades(req: Request):
+    """올해(또는 ?year=) 체결 내역. 계좌가 여러 개면 전부 합친다."""
+    this_year = datetime.now(ZoneInfo("Asia/Seoul")).year
+    try:
+        year = int(req.query.get("year", [this_year])[0])
+    except ValueError:
+        raise ApiError(400, "year는 숫자여야 합니다.")
+    if not 2000 <= year <= this_year:
+        raise ApiError(400, f"year는 2000~{this_year} 사이여야 합니다.")
+    fills = [dict(f) for f in all_fills(req.session) if f["filled_at"][:4] == str(year)]
+    try:
+        realized = realized_overseas(req.session, year)
+    except (requests.RequestException, ValueError, KeyError) as e:
+        print(f"[/api/trades] 환율을 못 받아 실현 손익 계산 생략: {e}", file=sys.stderr)
+        realized = None
+    symbols = sorted({f["symbol"] for f in fills} | {s["symbol"] for s in (realized or {}).get("sells", [])})
+    info = call_with_reauth(req.session, lambda token: lookup_stocks(token, symbols))
+    name = lambda sym: (info.get(sym) or {}).get("name", sym)  # noqa: E731
+    for row in fills + (realized or {}).get("sells", []):
+        row["name"] = name(row["symbol"])
+    return {"year": year, "fills": fills, "summary": summarize_fills(fills), "realized": realized}
+
+
+@route("GET", "/api/dividends")
+def get_dividends(req: Request):
+    this_year = datetime.now(ZoneInfo("Asia/Seoul")).year
+    try:
+        year = int(req.query.get("year", [this_year])[0])
+    except ValueError:
+        raise ApiError(400, "year는 숫자여야 합니다.")
+    if not 2000 <= year <= this_year:
+        raise ApiError(400, f"year는 2000~{this_year} 사이여야 합니다.")
+    try:
+        return dividends_for_year(req.session, year)
+    except (ValueError, KeyError):
+        raise ApiError(502, "환율 기록을 받지 못해 배당을 추정하지 못했습니다.")
+
+
+@route("POST", "/api/tax-settings")
+def post_tax_settings(req: Request):
+    try:
+        settings = normalize_tax_settings(req.body.get("settings"))
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    save_tax_settings(req.store, settings)
+    return {"ok": True, "settings": settings}
 
 
 # ---- 주간 리포트 ----
@@ -310,9 +465,7 @@ def get_weekly_report(req: Request):
     if account_groups:
         try:
             holdings = build_holdings(account_snapshot(req.session), req.store)
-            kr = [r["심볼"] for r in holdings["stocks"] + holdings["cash"]["stocks"] if r["통화"] == "KRW"]
-            kr_info = call_with_reauth(req.session, lambda token: lookup_stocks(token, kr)) if kr else {}
-            fill_account_groups(report, config, holdings, kr_info)
+            fill_account_groups(report, config, holdings, kr_stock_info(req.session, holdings))
         except requests.RequestException as e:
             print(f"[/api/weekly-report] 보유종목 조회 실패: {e}", file=sys.stderr)
             for g in account_groups:

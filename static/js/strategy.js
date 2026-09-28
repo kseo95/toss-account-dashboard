@@ -327,17 +327,20 @@ function strategyWeightCell(r) {
     `<span class="strategy-sub">최종 ${z.position_pct.toFixed(1)}% (${fmtWon(z.full_krw)})</span></td>`;
 }
 
+// 매도 신호 옆 예상 세금(세금 페이지와 같은 계산, 판 금액에 비례). 0이면 표시 안 함.
+const taxNote = krw => (krw > 0 ? ` · 세금 약 ${fmtWon(krw)}` : '');
+
 function strategyBuyCell(r) {
   const z = r.sizing;
   if (!z) return '<td class="muted">–</td>';
   const shares = n => (n > 0 ? ` · 약 ${n.toLocaleString('ko-KR')}주` : '');
   let now = '<span class="muted">지금 없음</span>';
   if (z.buy_now_krw > 0) now = `지금 매수 <b>${fmtWon(z.buy_now_krw)}</b>${shares(z.buy_now_shares)}`;
-  else if (z.over_krw > 0 && r.cycle >= 2) now = `지금 매도 <b class="loss">${fmtWon(z.over_krw)}</b>${shares(z.over_shares)}`;
+  else if (z.over_krw > 0 && r.cycle >= 2) now = `지금 매도 <b class="loss">${fmtWon(z.over_krw)}</b>${shares(z.over_shares)}${taxNote(z.sell_now_tax_krw)}`;
   else if (z.over_krw > 0) now += `<span class="strategy-sub">목표보다 ${fmtWon(z.over_krw)} 많음</span>`;
   const change = z.next_change_krw;
   const next = change > 0 ? `다음 단계 매수 ${fmtWon(change)}${shares(z.next_change_shares)}`
-    : change < 0 ? `다음 단계 매도 ${fmtWon(-change)}${shares(z.next_change_shares)}` : '다음 단계 없음 (완료)';
+    : change < 0 ? `다음 단계 매도 ${fmtWon(-change)}${shares(z.next_change_shares)}${taxNote(z.next_sell_tax_krw)}` : '다음 단계 없음 (완료)';
   return `<td>${now}<span class="strategy-sub">${next}</span></td>`;
 }
 

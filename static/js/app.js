@@ -55,19 +55,22 @@ $('logoutBtn').addEventListener('click', async () => {
   showLoggedOut();
 });
 
-// 페이지 탭 (포트폴리오 / 주간 리포트). 주간 리포트는 종목이 많아(Yahoo 50여 개) 탭을 처음 열 때만 불러온다.
-let weeklyReportLoaded = false;
+// 페이지 탭 (포트폴리오 / 주간 리포트 / 세금). 주간 리포트·세금은 탭을 처음 열 때만 불러온다.
+const PAGES = { portfolio: 'pagePortfolio', report: 'pageReport', tax: 'pageTax' };
+const pageLoaded = {};
+const PAGE_LOADERS = {
+  report: () => { loadWeeklyReport(false); loadWeeklyReportConfig(); },
+  tax: () => { loadTax(); loadTrades(); loadDividends(); },
+};
 document.querySelectorAll('.page-tab').forEach(tab => {
   tab.addEventListener('click', () => {
+    const page = tab.dataset.page;
     document.querySelectorAll('.page-tab').forEach(t => t.classList.toggle('active', t === tab));
-    const isReport = tab.dataset.page === 'report';
-    $('pagePortfolio').style.display = isReport ? 'none' : '';
-    $('pageReport').style.display = isReport ? '' : 'none';
-    $('connectedView').classList.toggle('wide', isReport);
-    if (isReport && !weeklyReportLoaded) {
-      weeklyReportLoaded = true;
-      loadWeeklyReport(false);
-      loadWeeklyReportConfig();
+    Object.entries(PAGES).forEach(([key, id]) => { $(id).style.display = key === page ? '' : 'none'; });
+    $('connectedView').classList.toggle('wide', page === 'report');
+    if (PAGE_LOADERS[page] && !pageLoaded[page]) {
+      pageLoaded[page] = true;
+      PAGE_LOADERS[page]();
     }
   });
 });

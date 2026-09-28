@@ -1,6 +1,6 @@
 # ARCHITECTURE
 
-## 현재 구조 (Log 16, 2026-09-28)
+## 현재 구조 (Log 17, 2026-09-28)
 
 ```
 redo/
@@ -12,9 +12,12 @@ redo/
 ├── watch.py           # 관심종목, MA 감시
 ├── strategy.py        # 분할매수 전략: 템플릿 검증, 평가(래칫·회복·배수·n차 사이클), 매수/매도 금액
 ├── weekly_report.py   # 주간 리포트: Yahoo 일봉 → 주봉 지표, 자동 코멘트, 내 계좌
+├── tax.py             # 세금 추정: 증권거래세·해외 양도세(연간 합산·공제)·기타 ETF, 세율 설정, 법 출처 표
+├── trades.py          # 체결 내역(종료된 주문 → 체결), 해외 실현 손익(선입선출·결제일 환율)
+├── dividends.py       # 배당 추정(배당락일 보유 수량 × Yahoo 배당 기록, 원천징수)
 ├── dashboard.html     # 마크업만
 ├── static/css/app.css
-├── static/js/         # common → portfolio → watch → strategy → report → app 순서로 로드
+├── static/js/         # common → portfolio → watch → strategy → report → tax → app 순서로 로드
 ├── tests/             # unittest
 └── data/              # .gitignore — server_secret, legacy_migrated, users/<user_id>/*.json
 ```
@@ -41,5 +44,8 @@ redo/
 - `test_weekly_report.py`: 주봉 묶기, 기준일(ET), 종목 주간 지표, 설정 검증, 자동 코멘트, 리포트 조립·캐시, 내 계좌, Yahoo 파싱.
 - `test_strategy.py`: 단계 평가, 래칫, 회복 게이팅, 배정 방식, 배수, 다음 단계 %p, n차 사이클(real/ 숫자 경로·무장·배수 초기화·예전 기록), 설정 검증, 자동 배정, 매수/매도 금액.
 - `test_portfolio.py`: 리밸런싱·통화 비중, 설정 검증.
+- `test_trades.py`: 주문 목록 페이지 넘기기, 체결 골라내기·합계, 실현 손익(선입선출·환율·연도·불완전 표시).
+- `test_dividends.py`: 배당락일 보유 수량, 예전 보유분 보정, 원천징수, 연도·환율.
+- `test_tax.py`: 국내 종목 종류 추정, 시장별 거래세, 해외 양도세 합산·공제·올해 실현분, 기타 ETF, 대주주, 매도 세금 비율, 설정 검증.
 - `test_storage_http.py`: user_id, 저장소 왕복·기본값, 예전 파일 이전, 실제 Handler를 임시 포트로 띄운 HTTP 테스트(로그인, 401/403/413/404, 잘못된 JSON, 정적 파일·경로 조작 차단, 계좌 원자료 캐시, 사용자 분리).
 - 외부 API는 `unittest.mock`으로 대체. 기능 모듈이 `from toss_api import ...`로 가져온 함수는 **쓰는 모듈 쪽**을 patch한다(예: `strategy.fetch_close_history`).

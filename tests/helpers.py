@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 warnings.filterwarnings("ignore")  # urllib3 LibreSSL 경고 등
 
-import common, portfolio, server, storage, strategy, toss_api, watch, weekly_report  # noqa: E402,F401
+import common, dividends, portfolio, server, storage, strategy, tax, toss_api, trades, watch, weekly_report  # noqa: E402,F401
 
 FIRST_MONDAY = date(2020, 1, 6)
 

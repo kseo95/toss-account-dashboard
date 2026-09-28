@@ -375,3 +375,24 @@ ul.wr-comments li::marker { color: var(--accent); }
 #wrResetBtn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
 #wrResetBtn:hover { color: var(--text); border-color: var(--muted); }
 #wrSaved { color: var(--muted); font-size: 12px; display: none; }
+
+/* 세금 */
+.tax-ref td { white-space: normal; text-align: left; vertical-align: top; font-size: 12px; line-height: 1.5; }
+.tax-ref td:first-child { white-space: nowrap; }
+#taxRows td { vertical-align: top; }
+#taxRows td.name { white-space: normal; }
+#taxRows select { padding: 3px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; }
+#taxSaveBtn { background: var(--accent); color: #fff; border: none; }
+.tax-gauge { margin: 6px 0 14px; }
+.tax-gauge .bar { position: relative; height: 22px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; display: flex; overflow: visible; margin-top: 22px; }
+.tax-gauge .seg { height: 100%; }
+.tax-gauge .seg.realized { background: var(--accent); border-radius: 5px 0 0 5px; }
+.tax-gauge .seg.unrealized { background: rgba(59, 130, 246, 0.35); }
+.tax-gauge .line { position: absolute; top: -6px; bottom: -6px; width: 2px; background: var(--danger); }
+.tax-gauge .line em { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font-style: normal; font-size: 11px; color: var(--danger); white-space: nowrap; margin-bottom: 2px; }
+.tax-gauge .legend { font-size: 11px; color: var(--muted); margin-top: 8px; display: flex; align-items: center; gap: 6px; }
+.tax-gauge .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 8px; }
+.tax-gauge .dot.realized { background: var(--accent); margin-left: 0; }
+.tax-gauge .dot.unrealized { background: rgba(59, 130, 246, 0.35); }
+.trades-summary { width: auto; min-width: 60%; margin-bottom: 4px; }
+.trades-summary td, .trades-summary th { padding: 5px 14px 5px 0; }

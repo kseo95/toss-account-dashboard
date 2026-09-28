@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import http.client
+from datetime import date, datetime
 import json
 import os
 import re
@@ -306,6 +307,74 @@ class HttpTest(TempDataDirMixin, unittest.TestCase):
             session["snapshot"] = (session["snapshot"][0] - server.SNAPSHOT_TTL - 1, snap)
             self.request("GET", "/api/holdings", cookie=cookie)
             self.assertEqual(fetch.call_count, 2)
+
+    def test_tax_page_and_settings(self):
+        cookie = self.login("key-a")
+        snap = {"usd_krw": 1000.0, "cash_krw": 0.0, "cash_usd": 0.0, "items": [
+            {"symbol": "AAPL", "name": "Apple", "currency": "USD", "quantity": 1, "marketCountry": "US",
+             "marketValue": {"amount": 5000.0}, "profitLoss": {"amountAfterCost": 3000.0, "rateAfterCost": 1.5}}]}
+        fx = {"bars": [(date(2026, 1, 2), 1000.0, 1000.0)], "divs": [], "name": "KRW=X"}
+        with mock.patch.object(server, "fetch_account_snapshot", return_value=snap), \
+                mock.patch.object(server, "get_closed_orders", return_value=[]), \
+                mock.patch.object(server, "get_yahoo_daily_history", return_value=fx), \
+                mock.patch.object(portfolio, "get_cached_usd_jpy_quote", return_value=None):
+            status, data, _ = self.request("GET", "/api/tax", cookie=cookie)
+            self.assertEqual(data["realized_source"], "auto")
+            self.assertEqual(status, 200)
+            self.assertAlmostEqual(data["summary"]["gain_tax_if_sell_all_krw"], (3_000_000 - 2_500_000) * 0.22)
+            settings = data["settings"]
+            settings["realized_overseas_gain_ytd_krw"] = 2_500_000
+            settings["use_manual_realized"] = True
+            self.assertEqual(self.request("POST", "/api/tax-settings", {"settings": settings}, cookie=cookie)[0], 200)
+            data = self.request("GET", "/api/tax", cookie=cookie)[1]
+            self.assertAlmostEqual(data["summary"]["gain_tax_if_sell_all_krw"], 3_000_000 * 0.22)
+        settings["overseas_gain_rate_pct"] = 500
+        status, payload, _ = self.request("POST", "/api/tax-settings", {"settings": settings}, cookie=cookie)
+        self.assertEqual(status, 400)
+        self.assertIn("해외 양도세율", payload["error"])
+
+    def test_trades_endpoint(self):
+        cookie = self.login("key-a")
+        orders = [{"orderId": "1", "symbol": "AAPL", "side": "BUY", "currency": "USD", "status": "FILLED",
+                   "execution": {"filledQuantity": "1", "averageFilledPrice": "150", "filledAmount": "150",
+                                 "commission": "0.1", "tax": None, "filledAt": "2026-03-02T23:30:00+09:00", "settlementDate": "2026-03-04"}}]
+        fx = {"bars": [(date(2026, 1, 2), 1400.0, 1400.0)], "divs": [], "name": "KRW=X"}
+        with mock.patch.object(server, "get_closed_orders", return_value=orders) as fetch, \
+                mock.patch.object(server, "get_yahoo_daily_history", return_value=fx), \
+                mock.patch.object(server, "lookup_stocks", return_value={"AAPL": {"name": "Apple"}}):
+            status, data, _ = self.request("GET", "/api/trades?year=2026", cookie=cookie)
+            self.request("GET", "/api/trades?year=2026", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["fills"][0]["name"], "Apple")
+        self.assertEqual(fetch.call_args.args[2], "2000-01-01")  # 선입선출용 전체 기간
+        self.assertEqual(fetch.call_count, 1, "ORDERS_TTL 안에서는 다시 받지 않음")
+        self.assertEqual(data["realized"]["sells"], [])
+        self.assertEqual(self.request("GET", "/api/trades?year=abc", cookie=cookie)[0], 400)
+        self.assertEqual(self.request("GET", "/api/trades?year=1999", cookie=cookie)[0], 400)
+
+    def test_dividends_endpoint_and_tax_income(self):
+        cookie = self.login("key-a")
+        snap = {"usd_krw": 1000.0, "cash_krw": 0.0, "cash_usd": 0.0, "items": [
+            {"symbol": "AAPL", "name": "Apple", "currency": "USD", "quantity": 4, "marketCountry": "US",
+             "marketValue": {"amount": 800.0}, "profitLoss": {"amountAfterCost": 0.0, "rateAfterCost": 0.0}}]}
+        year = datetime.now().year
+
+        def yahoo(sym, force=False):
+            if sym == "KRW=X":
+                return {"bars": [(date(year, 1, 1), 1000.0, 1000.0)], "divs": [], "name": sym}
+            return {"bars": [], "divs": [(date(year, 1, 2), 0.25)], "name": sym}
+
+        with mock.patch.object(server, "fetch_account_snapshot", return_value=snap), \
+                mock.patch.object(server, "get_closed_orders", return_value=[]), \
+                mock.patch.object(server, "get_yahoo_daily_history", side_effect=yahoo), \
+                mock.patch.object(server, "lookup_stocks", return_value={}), \
+                mock.patch.object(portfolio, "get_cached_usd_jpy_quote", return_value=None):
+            status, data, _ = self.request("GET", "/api/dividends", cookie=cookie)
+            self.assertEqual(status, 200)
+            self.assertAlmostEqual(data["total_gross_krw"], 4 * 0.25 * 1000)   # 체결 내역 없음 → 지금 보유 4주로 보정
+            tax_data = self.request("GET", "/api/tax", cookie=cookie)[1]
+        self.assertEqual(tax_data["income_source"], "auto")
+        self.assertAlmostEqual(tax_data["summary"]["financial_income_ytd_krw"], 1000.0)
 
     def test_logout(self):
         a = self.login("key-a")

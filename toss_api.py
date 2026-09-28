@@ -87,6 +87,27 @@ def get_daily_candles(token: str, symbol: str, count: int = 2, before: str | Non
     return api_get("/api/v1/candles", token, params=params).get("result", {})
 
 
+ORDERS_PAGE_LIMIT = 100  # API 최대
+ORDERS_MAX_PAGES = 50    # 계좌당 최대 5,000건까지만(무한 루프 방지)
+
+
+def get_closed_orders(token: str, account_seq: str, date_from: str, date_to: str) -> list[dict]:
+    """종료된 주문(체결·취소·거부 등) 전체, 주문일(KST) date_from~date_to. 커서로 끝까지 넘긴다.
+    Open API가 지원하는 호가 유형(지정가·시장가·장마감지정가)으로 넣은 주문만 나온다(시간외 종가 등은 빠짐)."""
+    orders: list[dict] = []
+    cursor = None
+    for _ in range(ORDERS_MAX_PAGES):
+        params = {"status": "CLOSED", "from": date_from, "to": date_to, "limit": ORDERS_PAGE_LIMIT}
+        if cursor:
+            params["cursor"] = cursor
+        result = api_get("/api/v1/orders", token, params=params, account_seq=account_seq).get("result", {})
+        orders.extend(result.get("orders", []))
+        cursor = result.get("nextCursor")
+        if not result.get("hasNext") or not cursor:
+            break
+    return orders
+
+
 def fetch_account_snapshot(token: str, accounts: list[dict]) -> dict:
     """계좌 원자료: 환율 + 계좌별 예수금(원/달러) + 보유종목. 요청들을 병렬로 보낸다."""
     jobs = [("fx", None)] + [(kind, a["accountSeq"]) for a in accounts for kind in ("KRW", "USD", "holdings")]
