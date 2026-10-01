@@ -8,13 +8,14 @@ redo/
 ├── common.py          # 공용: ApiError, to_float, 종목 코드 검증, parallel_map
 ├── toss_api.py        # 토스 Open API + 네이버 검색 + Yahoo USD/JPY, 캐시(종목정보 10분·일봉 5분)
 ├── storage.py         # 사용자별 저장소(UserStore), user_id, 예전 파일 이전
-├── portfolio.py       # 보유종목·예수금 계산, 현금 취급 종목, 리밸런싱, 원/달러 비중
+├── portfolio.py       # 보유종목·예수금, 현금 취급, 목표 비중·리밸런싱 금액 계획, 원/달러 비중
 ├── watch.py           # 관심종목, MA 감시
 ├── strategy.py        # 분할매수 전략: 템플릿 검증, 평가(래칫·회복·배수·n차 사이클), 매수/매도 금액
 ├── weekly_report.py   # 주간 리포트: Yahoo 일봉 → 주봉 지표, 자동 코멘트, 내 계좌
 ├── tax.py             # 세금 추정: 증권거래세·해외 양도세(연간 합산·공제)·기타 ETF, 세율 설정, 법 출처 표
 ├── trades.py          # 체결 내역(종료된 주문 → 체결), 해외 실현 손익(선입선출·결제일 환율)
 ├── dividends.py       # 배당 추정(배당락일 보유 수량 × Yahoo 배당 기록, 원천징수)
+├── agent_tools.py      # Agent용 읽기 전용 도구 계약 + 비민감 결과 축약
 ├── dashboard.html     # 마크업만
 ├── static/css/app.css
 ├── static/js/         # common → portfolio → watch → strategy → report → tax → app 순서로 로드
@@ -39,6 +40,17 @@ redo/
 - `common.js`: `esc`(API 문자열 이스케이프), 포맷, `getJson`/`postJson`, 저장 버튼 흐름 `runSave`, 종목 검색 자동완성 `attachSymbolSearch`(관심종목·MA·전략 배정이 공유).
 - 설정은 전부 화면의 설정 패널에서 편집 → `POST /api/...`로 전체 교체 저장.
 
+## AI Agent 도구 계층 (v1)
+- `GET /api/agent/tools`: 허용된 읽기 전용 도구의 이름·설명·입력 스키마를 반환한다.
+- `POST /api/agent/tool`: 서버가 기존 계산 함수를 실행한 뒤 `agent_tools.py`가 허용한 필드만 축약해 반환한다.
+- 현재 도구는 포트폴리오 요약, 주간 위험 점검, 전량 매도 가정 세금 추정 3개다.
+- 질문 실행 API는 API 키가 있으면 모델 도구 호출을 수행하고, 없으면 규칙으로 필요한 도구를 선택해 결과를 조합한다.
+- Agent 탭은 예시 질문, 실행 도구 추적, 답변과 계산 한계를 표시한다.
+- OpenAI API 키가 설정되면 openai_agent.py가 Responses API 함수 호출 루프를 실행한다. 모델은 허용된 도구만 선택하며 서버가 실행한 축약 결과를 받아 최종 답변한다.
+- API 키와 모델 설정은 로그인 세션 메모리에만 존재한다. 응답 저장은 비활성화하며 최근 대화 문맥은 브라우저 메모리에서 최대 8개만 전달한다.
+- 토스 앱키·시크릿·토큰·계좌번호와 전체 원본 응답은 Agent 결과에 포함하지 않는다.
+- 쓰기·설정 변경·주문 도구는 제공하지 않는다. 키가 없을 때만 기존 규칙 기반 라우터를 대체 경로로 사용한다.
+
 ## 테스트 (`tests/`)
 - `test_toss_api.py`: 일봉→주봉 묶기·페이지·캐시, 계좌 원자료 합치기, 보유 화면 계산.
 - `test_weekly_report.py`: 주봉 묶기, 기준일(ET), 종목 주간 지표, 설정 검증, 자동 코멘트, 리포트 조립·캐시, 내 계좌, Yahoo 파싱.
@@ -48,4 +60,5 @@ redo/
 - `test_dividends.py`: 배당락일 보유 수량, 예전 보유분 보정, 원천징수, 연도·환율.
 - `test_tax.py`: 국내 종목 종류 추정, 시장별 거래세, 해외 양도세 합산·공제·올해 실현분, 기타 ETF, 대주주, 매도 세금 비율, 설정 검증.
 - `test_storage_http.py`: user_id, 저장소 왕복·기본값, 예전 파일 이전, 실제 Handler를 임시 포트로 띄운 HTTP 테스트(로그인, 401/403/413/404, 잘못된 JSON, 정적 파일·경로 조작 차단, 계좌 원자료 캐시, 사용자 분리).
+- `test_agent_tools.py`: 도구 허용 목록, 자격증명 비노출, 결과 축약, 한계·불완전 데이터 표시.
 - 외부 API는 `unittest.mock`으로 대체. 기능 모듈이 `from toss_api import ...`로 가져온 함수는 **쓰는 모듈 쪽**을 patch한다(예: `strategy.fetch_close_history`).

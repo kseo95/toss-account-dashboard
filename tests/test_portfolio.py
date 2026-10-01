@@ -31,6 +31,27 @@ class ComputeRebalanceTest(unittest.TestCase):
         for r in portfolio.compute_rebalance(self.rows, 0.0, set(), 0.0, self.config):
             self.assertEqual(r["current_pct"], 0.0)
 
+    def test_plan_balances_when_targets_sum_to_100(self):
+        plan = portfolio.compute_rebalance_plan([
+            {"label": "주식", "current_pct": 70, "target_pct": 60},
+            {"label": "현금", "current_pct": 30, "target_pct": 40},
+        ], 1_000_000)
+        self.assertTrue(plan["ready"])
+        self.assertAlmostEqual(plan["sell_total_krw"], 100_000)
+        self.assertAlmostEqual(plan["buy_total_krw"], 100_000)
+        rows = {r["label"]: r for r in plan["rows"]}
+        self.assertEqual(rows["주식"]["action"], "sell")
+        self.assertEqual(rows["현금"]["action"], "buy")
+
+    def test_plan_warns_when_targets_do_not_sum_to_100(self):
+        plan = portfolio.compute_rebalance_plan([
+            {"label": "주식", "current_pct": 70, "target_pct": 50},
+            {"label": "현금", "current_pct": 30, "target_pct": 20},
+        ], 1_000_000)
+        self.assertFalse(plan["ready"])
+        self.assertEqual(plan["target_total_pct"], 70)
+        self.assertTrue(any("100%" in x for x in plan["warnings"]))
+
 
 class CurrencySplitTest(unittest.TestCase):
     def test_split_includes_cash(self):

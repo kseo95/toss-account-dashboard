@@ -137,6 +137,31 @@ function renderAllocChart(rebalance) {
   drawDonut('alloc', 'allocChart', items, allocLegendLabels);
 }
 
+function renderRebalancePlan(plan) {
+  const status = $('rebalancePlanStatus');
+  status.className = 'rb-plan-status ' + (plan.ready ? 'ready' : 'warn');
+  status.textContent = plan.ready
+    ? `목표 합계 ${fmtShortPct(plan.target_total_pct)} · 금액 기준 리밸런싱 가능`
+    : `목표 합계 ${fmtShortPct(plan.target_total_pct)} · 목표를 100%로 맞춰주세요`;
+
+  const actionText = row => {
+    if (row.action === 'buy') return `<span class="profit">매수 ${fmtWon(row.difference_krw)}</span>`;
+    if (row.action === 'sell') return `<span class="loss">매도 ${fmtWon(-row.difference_krw)}</span>`;
+    return '<span class="muted">유지</span>';
+  };
+  $('rebalancePlanRows').innerHTML = (plan.rows || []).length
+    ? plan.rows.map(row => `<tr>
+        <td>${esc(row.label)}</td>
+        <td>${fmtWon(row.current_krw)} <span class="muted">(${fmtShortPct(row.current_pct)})</span></td>
+        <td>${fmtWon(row.target_krw)} <span class="muted">(${fmtShortPct(row.target_pct)})</span></td>
+        <td>${actionText(row)}</td>
+      </tr>`).join('')
+    : '<tr class="empty-row"><td colspan="4">리밸런싱 항목이 없습니다.</td></tr>';
+  $('rebalancePlanTotals').textContent =
+    `총 매도 ${fmtWon(plan.sell_total_krw)} · 총 매수 ${fmtWon(plan.buy_total_krw)} · 자금 차이 ${fmtWon(plan.funding_gap_krw)}`;
+  $('rebalancePlanWarnings').innerHTML = (plan.warnings || []).map(x => `<li>${esc(x)}</li>`).join('');
+}
+
 function currencyLegendLabels(chart) {
   const s = lastCurrencySplit;
   const byLabel = { '원화': [s.krw_pct, s.krw_target_pct], '달러': [s.usd_pct, s.usd_target_pct] };
@@ -318,6 +343,7 @@ async function loadHoldings() {
   renderUsRows(data.stocks.filter(r => r['시장'] !== 'KR'));
   renderCashTable(data.cash);
   renderAllocChart(data.rebalance);
+  renderRebalancePlan(data.rebalance_plan);
   renderCurrencyChart(data.currency_split);
   renderFxDisplay(data.usd_krw, data.usd_jpy);
 

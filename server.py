@@ -33,8 +33,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from agent_tools import (TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
+                         plan_agent_query)
 from common import ApiError, normalize_symbols, parallel_map, to_float
 from dividends import estimate_dividends
+from openai_agent import AgentApiError, DEFAULT_AGENT_MODEL, normalize_history, run_openai_agent
 from portfolio import (CASH_SYMBOLS_MAX, build_holdings, load_cash_symbols, load_rebalance_config, save_cash_symbols,
                        save_rebalance_config, snapshot_rows, validate_rebalance_targets)
 from storage import UserStore, migrate_legacy_files, store_for, store_for_user, user_id_for_accounts
@@ -490,6 +493,93 @@ def post_weekly_report_config(req: Request):
         raise ApiError(400, f"Yahoo Finance에서 데이터를 찾을 수 없는 심볼입니다: {', '.join(failed)}")
     save_weekly_report_config(req.store, config)
     return {"ok": True, "config": config}
+
+
+# ---- AI Agent 읽기 전용 도구 ----
+@route("GET", "/api/agent/tools")
+def get_agent_tools(req: Request):
+    """LLM 또는 화면이 사용할 수 있는 도구 목록. 쓰기·주문 도구는 의도적으로 제공하지 않는다."""
+    return {"tools": TOOL_DEFINITIONS}
+
+
+@route("GET", "/api/agent/config")
+def get_agent_config(req: Request):
+    return {
+        "configured": bool(req.session.get("openai_api_key")),
+        "model": req.session.get("agent_model", DEFAULT_AGENT_MODEL),
+    }
+
+
+@route("POST", "/api/agent/config")
+def post_agent_config(req: Request):
+    api_key = str(req.body.get("api_key") or "").strip()
+    model = str(req.body.get("model") or DEFAULT_AGENT_MODEL).strip()
+    if len(api_key) > 500 or len(model) > 100:
+        raise ApiError(400, "Agent 설정값이 너무 깁니다.")
+    if api_key:
+        req.session["openai_api_key"] = api_key
+    elif req.body.get("clear_key"):
+        req.session.pop("openai_api_key", None)
+    req.session["agent_model"] = model or DEFAULT_AGENT_MODEL
+    return {"ok": True, "configured": bool(req.session.get("openai_api_key")),
+            "model": req.session["agent_model"]}
+
+
+@route("POST", "/api/agent/tool")
+def post_agent_tool(req: Request):
+    """허용된 도구 하나를 서버에서 실행한다. Toss 자격증명과 원본 응답은 반환하지 않는다."""
+    name = str(req.body.get("name") or "").strip()
+    if name not in TOOL_NAMES:
+        raise ApiError(400, "허용되지 않은 Agent 도구입니다.")
+    return execute_agent_tool(req, name)
+
+
+def execute_agent_tool(req: Request, name: str) -> dict:
+    """허용된 도구의 기존 계산을 실행하고 Agent 공개 형식으로 축약한다."""
+    if name == "get_portfolio_overview":
+        payload = get_holdings_view(req)
+    elif name == "get_weekly_risk_report":
+        payload = get_weekly_report(req)
+    else:
+        payload = get_tax(req)
+    return format_tool_result(name, payload)
+
+
+@route("POST", "/api/agent/query")
+def post_agent_query(req: Request):
+    """API 키가 있으면 LLM 도구 호출, 없으면 규칙 기반 대체 경로로 질문을 처리한다."""
+    question = str(req.body.get("question") or "").strip()
+    api_key = req.session.get("openai_api_key")
+    if api_key:
+        try:
+            return run_openai_agent(
+                api_key,
+                req.session.get("agent_model", DEFAULT_AGENT_MODEL),
+                question,
+                normalize_history(req.body.get("history")),
+                lambda name: execute_agent_tool(req, name),
+            )
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        except AgentApiError as e:
+            raise ApiError(502, str(e))
+    try:
+        plan = plan_agent_query(question)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    results, executions = {}, []
+    definitions = {item["name"]: item for item in TOOL_DEFINITIONS}
+    for name in plan["tools"]:
+        output = execute_agent_tool(req, name)
+        results[name] = output["result"]
+        executions.append({"tool": name, "description": definitions[name]["description"]})
+    return {
+        "mode": "rule_based_preview",
+        "question": question,
+        "plan": plan,
+        "executions": executions,
+        "answer": compose_agent_answer(results),
+    }
 
 
 # ---------------------------------------------------------------------------

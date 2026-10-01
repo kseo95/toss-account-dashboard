@@ -55,19 +55,20 @@ $('logoutBtn').addEventListener('click', async () => {
   showLoggedOut();
 });
 
-// 페이지 탭 (포트폴리오 / 주간 리포트 / 세금). 주간 리포트·세금은 탭을 처음 열 때만 불러온다.
-const PAGES = { portfolio: 'pagePortfolio', report: 'pageReport', tax: 'pageTax' };
+// 페이지 탭. 주간 리포트·세금은 탭을 처음 열 때만 불러온다.
+const PAGES = { portfolio: 'pagePortfolio', report: 'pageReport', tax: 'pageTax', agent: 'pageAgent' };
 const pageLoaded = {};
 const PAGE_LOADERS = {
   report: () => { loadWeeklyReport(false); loadWeeklyReportConfig(); },
   tax: () => { loadTax(); loadTrades(); loadDividends(); },
+  agent: () => { loadAgentConfig(); },
 };
 document.querySelectorAll('.page-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     const page = tab.dataset.page;
     document.querySelectorAll('.page-tab').forEach(t => t.classList.toggle('active', t === tab));
     Object.entries(PAGES).forEach(([key, id]) => { $(id).style.display = key === page ? '' : 'none'; });
-    $('connectedView').classList.toggle('wide', page === 'report');
+    $('connectedView').classList.toggle('wide', page === 'report' || page === 'agent');
     if (PAGE_LOADERS[page] && !pageLoaded[page]) {
       pageLoaded[page] = true;
       PAGE_LOADERS[page]();

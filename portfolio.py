@@ -132,6 +132,51 @@ def compute_rebalance(all_rows: list[dict], cash_krw_total: float, cash_symbols:
     return list(merged.values())
 
 
+def compute_rebalance_plan(rebalance: list[dict], total_eval: float) -> dict:
+    """현재 비중을 목표 비중에 맞추기 위한 카테고리별 매수·매도 금액.
+
+    목표 합계가 100%가 아니어도 초안 금액은 보여주되 ready=False로 표시한다. 카테고리에 종목이 여러 개면
+    카테고리 내부 배분 기준이 없으므로 여기서는 카테고리 합계 금액까지만 계산한다. 실제 주문은 만들지 않는다.
+    """
+    rows = []
+    for item in rebalance:
+        current_pct = to_float(item.get("current_pct"))
+        target_pct = to_float(item.get("target_pct"))
+        current_krw = total_eval * current_pct / 100
+        target_krw = total_eval * target_pct / 100
+        difference_krw = target_krw - current_krw
+        rows.append({
+            "label": str(item.get("label") or ""),
+            "current_pct": current_pct,
+            "target_pct": target_pct,
+            "current_krw": current_krw,
+            "target_krw": target_krw,
+            "difference_krw": difference_krw,
+            "action": "buy" if difference_krw > 0.5 else ("sell" if difference_krw < -0.5 else "hold"),
+        })
+    rows.sort(key=lambda r: abs(r["difference_krw"]), reverse=True)
+    target_total_pct = sum(r["target_pct"] for r in rows)
+    buy_total = sum(max(0.0, r["difference_krw"]) for r in rows)
+    sell_total = sum(max(0.0, -r["difference_krw"]) for r in rows)
+    ready = abs(target_total_pct - 100.0) <= 0.01
+    warnings = []
+    if not ready:
+        warnings.append(f"현재 표시된 항목의 목표 비중 합계가 {target_total_pct:g}%입니다. 100%로 맞춰야 매수·매도가 균형을 이룹니다.")
+    warnings += [
+        "카테고리에 여러 종목이 있으면 카테고리 합계 금액만 계산하며 내부 종목별 배분은 계산하지 않습니다.",
+        "수수료·세금·최소 주문 수량·주가 변동을 반영하지 않은 금액 기준 계획이며 실제 주문을 실행하지 않습니다.",
+    ]
+    return {
+        "ready": ready,
+        "target_total_pct": target_total_pct,
+        "buy_total_krw": buy_total,
+        "sell_total_krw": sell_total,
+        "funding_gap_krw": buy_total - sell_total,
+        "rows": rows,
+        "warnings": warnings,
+    }
+
+
 def compute_currency_split(all_rows: list[dict], cash_krw_amt: float, cash_usd_amt: float, usd_krw: float,
                            total_eval: float, krw_target_pct: float) -> dict:
     """전체 자산 중 원화/달러 통화 비중 (예수금 포함) + 목표 비중. 달러 목표는 100-원화 목표."""
@@ -195,6 +240,7 @@ def build_holdings(snapshot: dict, store: UserStore) -> dict:
     total_cost = total_eval - total_pl
 
     config = load_rebalance_config(store)
+    rebalance = compute_rebalance(rows, cash_krw_total, cash_symbols, total_eval, config)
     return {
         "stocks": stock_rows,
         "cash": {
@@ -209,7 +255,8 @@ def build_holdings(snapshot: dict, store: UserStore) -> dict:
             "profit_loss_krw": total_pl,
             "rate_pct": (total_pl / total_cost * 100) if total_cost else 0.0,
         },
-        "rebalance": compute_rebalance(rows, cash_krw_total, cash_symbols, total_eval, config),
+        "rebalance": rebalance,
+        "rebalance_plan": compute_rebalance_plan(rebalance, total_eval),
         "currency_split": compute_currency_split(rows, cash_krw_amt, cash_usd_amt, usd_krw, total_eval, config["krw_target_pct"]),
         "usd_krw": usd_krw,
         "usd_jpy": get_cached_usd_jpy_quote(),

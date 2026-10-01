@@ -220,6 +220,11 @@ button.rb-remove:hover { color: var(--danger); border-color: var(--danger); }
 #resetRebalanceBtn { background: transparent; color: var(--muted); border: 1px solid var(--border); }
 #resetRebalanceBtn:hover { color: var(--text); border-color: var(--muted); }
 #rebalanceSaved { color: var(--muted); font-size: 12px; display: none; }
+.rb-plan-status { margin: 10px 0; font-size: 13px; font-weight: 600; }
+.rb-plan-status.ready { color: var(--profit); }
+.rb-plan-status.warn { color: var(--danger); }
+.rb-plan-totals { margin-top: 10px; color: var(--text); font-size: 12px; }
+.rb-plan-warnings { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .watchlist-search { position: relative; margin-bottom: 14px; }
 .watchlist-search input {
@@ -396,3 +401,38 @@ ul.wr-comments li::marker { color: var(--accent); }
 .tax-gauge .dot.unrealized { background: rgba(59, 130, 246, 0.35); }
 .trades-summary { width: auto; min-width: 60%; margin-bottom: 4px; }
 .trades-summary td, .trades-summary th { padding: 5px 14px 5px 0; }
+
+/* Agent */
+.agent-hero { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:14px; }
+.agent-hero h2 { margin:0 0 5px; font-size:20px; }
+.agent-hero p { margin:0; color:var(--muted); font-size:13px; }
+.agent-mode { color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:5px 10px; font-size:11px; white-space:nowrap; }
+.agent-samples { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+.agent-samples button { background:var(--bg); color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:7px 11px; cursor:pointer; }
+.agent-samples button:hover { color:var(--text); border-color:var(--muted); }
+.agent-query-row { display:flex; gap:8px; }
+.agent-query-row input { flex:1; min-width:0; padding:11px 12px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:7px; }
+.agent-query-row input:focus { outline:none; border-color:var(--accent); }
+.agent-query-row button { border:0; border-radius:7px; padding:0 18px; background:var(--accent); color:#fff; cursor:pointer; }
+.agent-query-row button:disabled { opacity:.6; cursor:default; }
+.agent-config-row { display:grid; grid-template-columns:2fr 1fr; gap:10px; margin:12px 0; }
+.agent-config-row label { color:var(--muted); font-size:11px; }
+.agent-config-row input { display:block; box-sizing:border-box; width:100%; margin-top:5px; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; }
+.agent-config-row input:focus { outline:none; border-color:var(--accent); }
+.agent-conversation { display:grid; gap:8px; margin-bottom:12px; }
+.agent-message { max-width:88%; padding:9px 11px; border-radius:9px; font-size:12px; line-height:1.55; white-space:pre-wrap; }
+.agent-message.user { justify-self:end; background:var(--accent); color:#fff; }
+.agent-message.assistant { justify-self:start; background:var(--bg); border:1px solid var(--border); }
+.agent-clear { float:right; margin-top:8px; border:0; background:transparent; color:var(--muted); font-size:11px; cursor:pointer; }
+.agent-answer-text { white-space:pre-wrap; font-size:13px; line-height:1.7; }
+.agent-trace { display:grid; gap:8px; }
+.agent-step { display:flex; align-items:center; gap:10px; padding:9px 10px; border:1px solid var(--border); border-radius:7px; }
+.agent-step > span { display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--accent); color:#fff; font-size:11px; }
+.agent-step b, .agent-step small { display:block; }
+.agent-step b { font-size:12px; }
+.agent-step small, .agent-empty { color:var(--muted); font-size:11px; margin-top:2px; }
+.agent-answer { margin:0; padding-left:20px; line-height:1.8; font-size:13px; }
+.agent-answer li::marker { color:var(--accent); }
+.agent-limits { margin-top:16px; padding-top:12px; border-top:1px solid var(--border); color:var(--muted); font-size:11px; line-height:1.6; }
+.agent-limits ul { margin:5px 0 0; padding-left:18px; }
+@media (max-width: 600px) { .agent-hero { flex-direction:column; } .agent-query-row { flex-direction:column; } .agent-query-row button { padding:10px; } .agent-config-row { grid-template-columns:1fr; } }
