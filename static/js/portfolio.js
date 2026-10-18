@@ -118,10 +118,12 @@ function allocLegendLabels(chart) {
   const shown = new Set(base.map(it => it.text));
   base.forEach(it => {
     const r = byLabel[it.text];
-    if (r) it.text = `${it.text}  ${fmtShortPct(r.current_pct)} / ${fmtShortPct(r.target_pct)}`;
+    if (r) it.text = r.category === false
+      ? `${it.text}  ${fmtShortPct(r.current_pct)}` // 목표를 설정하지 않은 항목은 리밸런싱 계산에서 빠지므로 목표를 표시하지 않는다
+      : `${it.text}  ${fmtShortPct(r.current_pct)} / ${fmtShortPct(r.target_pct)}`;
   });
   const extras = lastRebalance
-    .filter(r => !shown.has(r.label) && r.target_pct > 0)
+    .filter(r => r.category !== false && !shown.has(r.label) && r.target_pct > 0)
     .sort((a, b) => b.target_pct - a.target_pct)
     .map(r => ({ text: `${r.label}  0% / ${fmtShortPct(r.target_pct)}`, fillStyle: categoryColorFor(r.label),
       strokeStyle: categoryColorFor(r.label), fontColor: '#8b949e', hidden: false, extra: true }));
@@ -141,8 +143,10 @@ function renderRebalancePlan(plan) {
   const status = $('rebalancePlanStatus');
   status.className = 'rb-plan-status ' + (plan.ready ? 'ready' : 'warn');
   status.textContent = plan.ready
-    ? `목표 합계 ${fmtShortPct(plan.target_total_pct)} · 금액 기준 리밸런싱 가능`
-    : `목표 합계 ${fmtShortPct(plan.target_total_pct)} · 목표를 100%로 맞춰주세요`;
+    ? `카테고리 목표 합계 ${fmtShortPct(plan.target_total_pct)} · 금액 기준 리밸런싱 가능`
+    : (plan.rows || []).length
+      ? `카테고리 목표 합계 ${fmtShortPct(plan.target_total_pct)} · 100%로 맞춰주세요`
+      : '목표를 설정한 카테고리가 없습니다';
 
   const actionText = row => {
     if (row.action === 'buy') return `<span class="profit">매수 ${fmtWon(row.difference_krw)}</span>`;
@@ -156,7 +160,7 @@ function renderRebalancePlan(plan) {
         <td>${fmtWon(row.target_krw)} <span class="muted">(${fmtShortPct(row.target_pct)})</span></td>
         <td>${actionText(row)}</td>
       </tr>`).join('')
-    : '<tr class="empty-row"><td colspan="4">리밸런싱 항목이 없습니다.</td></tr>';
+    : '<tr class="empty-row"><td colspan="4">목표를 설정한 카테고리가 없습니다.</td></tr>';
   $('rebalancePlanTotals').textContent =
     `총 매도 ${fmtWon(plan.sell_total_krw)} · 총 매수 ${fmtWon(plan.buy_total_krw)} · 자금 차이 ${fmtWon(plan.funding_gap_krw)}`;
   $('rebalancePlanWarnings').innerHTML = (plan.warnings || []).map(x => `<li>${esc(x)}</li>`).join('');
@@ -209,7 +213,7 @@ function setRebalanceDraft(data) {
 
 function updateRebalanceSum() {
   const categorySum = rebalanceDraft.targets.reduce((s, t) => s + (parseFloat(t.target_pct) || 0), 0);
-  $('rebalanceSum').textContent = `카테고리 목표% 합계: ${Math.round(categorySum * 10) / 10}% (미분류 종목/예수금은 위 "기본 목표%"로 각각 표시됩니다)`;
+  $('rebalanceSum').textContent = `카테고리 목표% 합계: ${Math.round(categorySum * 10) / 10}% (카테고리에 넣지 않은 종목과 현금은 리밸런싱 계산에서 제외됩니다)`;
   const krwTarget = parseFloat($('krwTargetInput').value) || 0;
   $('usdTargetHint').textContent = `(달러 목표: ${Math.round((100 - krwTarget) * 10) / 10}%)`;
 }

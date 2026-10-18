@@ -14,7 +14,7 @@ function showLoggedOut() {
 
 async function enterDashboard() {
   showLoggedIn();
-  await Promise.all([loadHoldings(), loadRebalanceConfig(), loadWatchlist(), loadMaRules(), loadStrategy()]);
+  await Promise.all([loadHoldings(), loadRebalanceConfig(), loadSectors(), loadWatchlist(), loadMaRules(), loadStrategy()]);
 }
 
 async function checkSession() {

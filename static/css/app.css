@@ -436,3 +436,77 @@ ul.wr-comments li::marker { color: var(--accent); }
 .agent-limits { margin-top:16px; padding-top:12px; border-top:1px solid var(--border); color:var(--muted); font-size:11px; line-height:1.6; }
 .agent-limits ul { margin:5px 0 0; padding-left:18px; }
 @media (max-width: 600px) { .agent-hero { flex-direction:column; } .agent-query-row { flex-direction:column; } .agent-query-row button { padding:10px; } .agent-config-row { grid-template-columns:1fr; } }
+
+/* 섹터 설정: 섹터 행(이름·대표 티커·삭제)과 종목 배정 행(종목·섹터·노출%·삭제) */
+.sector-row, .sector-assign-row {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+}
+.sector-row { grid-template-columns: 2fr 1fr auto; }
+.sector-assign-row { grid-template-columns: 2fr 1.5fr 80px auto; }
+.sector-row input, .sector-assign-row input, .sector-assign-row select {
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  width: 100%;
+}
+.sector-row input:focus, .sector-assign-row input:focus, .sector-assign-row select:focus { outline: none; border-color: var(--accent); }
+.sector-assign-row .sector-assign-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 섹터 자동 채우기 제안 */
+.sector-auto-row { display: grid; grid-template-columns: 1.2fr 2fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.sector-auto-cand { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.sector-auto-cand input[type="number"] { width: 70px; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; }
+
+/* Agent 답변 구역 사이 간격(빈 항목) */
+.agent-gap { list-style: none; height: 8px; }
+
+/* Agent 답변 표 */
+.agent-table-title { margin: 22px 0 8px; font-size: 14px; font-weight: 600; }
+.agent-table-title:first-of-type { margin-top: 14px; }
+.agent-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+.agent-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.agent-table th { padding: 10px 14px; background: rgba(127,127,127,.10); color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.agent-table td { padding: 11px 14px; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.agent-table tbody tr:last-child td { border-bottom: 0; }
+.agent-table tbody tr:nth-child(even) td { background: rgba(127,127,127,.045); }
+.agent-table tbody tr:hover td { background: rgba(59,130,246,.10); }
+.agent-table tfoot td { padding: 11px 14px; font-weight: 600; background: rgba(127,127,127,.10); border-top: 2px solid var(--border); border-bottom: 0; }
+.agent-table th:first-child, .agent-table td:first-child { text-align: left; font-weight: 600; }
+.agent-badge { display: inline-block; min-width: 46px; text-align: center; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.agent-badge.buy { color: var(--profit); background: rgba(79,174,95,.16); }
+.agent-badge.sell { color: var(--danger); background: rgba(230,103,103,.16); }
+.agent-meter { display: inline-block; vertical-align: middle; width: 56px; height: 6px; margin-right: 8px; border-radius: 3px; background: rgba(127,127,127,.25); overflow: hidden; }
+.agent-meter > span { display: block; height: 100%; background: var(--accent); }
+.agent-meter-num { display: inline-block; min-width: 56px; text-align: right; }
+.agent-table td.cell-down { color: var(--danger); font-weight: 600; }
+.agent-table td.cell-warn { color: #d9a441; }
+.agent-table td.cell-muted { color: var(--muted); font-style: italic; }
+.agent-table td.cell-strong { font-weight: 600; }
+
+/* Agent 답변 표: 뉴스(링크) 칸과 이번 주 등락 색 */
+.agent-table td.cell-wrap { white-space: normal; min-width: 320px; max-width: 680px; line-height: 1.5; }
+.agent-table td.cell-up { color: var(--profit); font-weight: 600; }
+.agent-news-item { margin: 3px 0; }
+.agent-news-meta { font-size: 11px; white-space: nowrap; }
+.agent-link { color: var(--accent); text-decoration: none; }
+.agent-link:hover { text-decoration: underline; }
+
+.agent-line { margin: 2px 0; }
+
+/* 칸이 적은 표는 가로로 늘이지 않는다 */
+.agent-table-wrap.compact { display: inline-block; max-width: 100%; }
+.agent-table-wrap.compact .agent-table { width: auto; min-width: 340px; }
+
+.agent-table td.cell-wrap-multi { white-space: normal; min-width: 170px; max-width: 300px; line-height: 1.5; vertical-align: top; }
+
+/* Agent 답변 그래프 */
+.agent-chart { margin: 14px 0; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 10px; background: rgba(127,127,127,.04); }
+.agent-chart-head { margin-bottom: 6px; font-size: 14px; line-height: 1.5; }
+.agent-chart-head .muted { font-size: 12px; font-weight: 400; }
+.agent-chart-caption { margin-top: 6px; font-size: 12px; line-height: 1.5; }

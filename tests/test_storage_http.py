@@ -136,7 +136,9 @@ class MigrationTest(TempDataDirMixin, unittest.TestCase):
         self.assertEqual(watch.load_watchlist(store), ["NEW"])
 
 
-class HttpTest(TempDataDirMixin, unittest.TestCase):
+class HttpTestBase(TempDataDirMixin):
+    """실제 Handler를 임시 포트로 띄우는 공용 설정(setUp·request·login). 테스트는 이 클래스를 TestCase와 함께 상속한다."""
+
     def setUp(self):
         super().setUp()
         server._sessions.clear()
@@ -155,11 +157,20 @@ class HttpTest(TempDataDirMixin, unittest.TestCase):
             "get_stock_info": mock.Mock(side_effect=lambda token, syms: {s: {"symbol": s} for s in syms}),
             "fetch_watchlist_rows": mock.Mock(side_effect=lambda token, syms: [{"symbol": s} for s in syms]),
             "validate_weekly_report_symbols": mock.Mock(return_value=[]),
+            "fetch_top_holdings": mock.Mock(return_value={"status": "none", "holdings": []}),   # ETF 편입 조회로 실제 네트워크를 쓰지 않는다
+            "fetch_fundamentals": mock.Mock(return_value={"status": "error", "metrics": None}),   # 밸류에이션 조회로 실제 네트워크를 쓰지 않는다
+            "fetch_gold_monthly": mock.Mock(side_effect=ValueError("테스트: 금 월간 시세 조회 차단")),
+            "read_default_key": mock.Mock(return_value=(None, None)),            # 개발자 PC의 환경변수·키체인 FRED 키가 테스트에 섞이지 않게
+            "save_fred_secret": mock.Mock(return_value=True),
+            "delete_fred_secret": mock.Mock(return_value=True),
+            "keychain_supported": mock.Mock(return_value=True),
         }
         for name, m in patches.items():
             p = mock.patch.object(server, name, m)
             p.start()
             self.addCleanup(p.stop)
+        server.reset_default_fred_key()
+        self.addCleanup(server.reset_default_fred_key)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -191,11 +202,45 @@ class HttpTest(TempDataDirMixin, unittest.TestCase):
         self.assertIn("SameSite=Strict", set_cookie)
         return set_cookie.split(";")[0]
 
+
+class HttpTest(HttpTestBase, unittest.TestCase):
     def test_login_failure(self):
         status, payload, _ = self.request("POST", "/api/login", {"app_key": "nope", "app_secret": "s"})
         self.assertEqual(status, 401)
         status, _, _ = self.request("POST", "/api/login", {"app_key": "", "app_secret": ""})
         self.assertEqual(status, 400)
+
+    def toss_error(self, status, body):
+        resp = server.requests.Response()
+        resp.status_code = status
+        resp._content = body if isinstance(body, bytes) else json.dumps(body).encode()
+        return server.requests.HTTPError(response=resp)
+
+    def test_toss_maintenance_is_reported_as_maintenance_not_generic_500(self):
+        cookie = self.login("key-a")
+        maintenance = {"error": {"requestId": "x", "code": "maintenance", "message": "점검 중입니다. 잠시 후 다시 시도해 주세요."}}
+        with mock.patch.object(server, "fetch_account_snapshot", side_effect=self.toss_error(500, maintenance)):
+            status, payload, _ = self.request("GET", "/api/holdings", cookie=cookie)
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "토스증권 API가 점검 중입니다. 잠시 후 다시 시도해 주세요.")
+
+    def test_other_toss_errors_keep_generic_message_and_hide_upstream_body(self):
+        cookie = self.login("key-a")
+        body = {"error": {"code": "internal", "message": "내부 상세 사유 비공개"}}
+        with mock.patch.object(server, "fetch_account_snapshot", side_effect=self.toss_error(500, body)):
+            status, payload, _ = self.request("GET", "/api/holdings", cookie=cookie)
+        self.assertEqual((status, payload["error"]), (500, "토스 API 오류 (500)"))
+        with mock.patch.object(server, "fetch_account_snapshot", side_effect=self.toss_error(502, b"<html>bad gateway</html>")):
+            status, payload, _ = self.request("GET", "/api/holdings", cookie=cookie)
+        self.assertEqual((status, payload["error"]), (502, "토스 API 오류 (502)"))
+
+    def test_login_during_maintenance_says_maintenance_not_bad_credentials(self):
+        maintenance = {"error": {"code": "maintenance", "message": "점검 중입니다."}}
+        with mock.patch.object(server, "get_access_token", side_effect=self.toss_error(500, maintenance)):
+            status, payload, _ = self.request("POST", "/api/login", {"app_key": "key-a", "app_secret": "s"})
+        self.assertEqual(status, 503)
+        self.assertIn("점검 중", payload["error"])
+        self.assertNotIn("앱키/시크릿을 확인", payload["error"])  # 점검 중에 키 탓으로 오해하게 하지 않는다
 
     def test_requires_login(self):
         for path in ["/api/holdings", "/api/watchlist", "/api/ma-rules", "/api/strategy", "/api/weekly-report",

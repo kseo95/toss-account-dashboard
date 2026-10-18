@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from datetime import date
@@ -71,6 +72,33 @@ def get_stock_info(token: str, symbols: list[str]) -> dict[str, dict]:
         return {}
     result = api_get("/api/v1/stocks", token, params={"symbols": ",".join(symbols)}).get("result", [])
     return {item["symbol"]: item for item in result}
+
+
+SECTOR_ID_PATTERN = re.compile(r"^[0-9]{1,10}$")
+SECTOR_MEMBER_KINDS = {"stocks", "etfs"}
+SECTOR_MARKETS = {"KR", "US"}
+
+
+def _result_list(payload) -> list[dict]:
+    """응답의 result가 목록이거나, 목록을 값으로 가진 객체일 때 그 목록을 꺼낸다(항목이 객체인 것만)."""
+    result = payload.get("result", []) if isinstance(payload, dict) else payload
+    if isinstance(result, dict):
+        result = next((v for v in result.values() if isinstance(v, list)), [])
+    return [x for x in result if isinstance(x, dict)] if isinstance(result, list) else []
+
+
+def get_sectors(token: str) -> list[dict]:
+    """토스 섹터 분류 전체(대·중·소분류, sectorId/name/depth/parentSectorId). 자주 안 바뀐다 — 하루 한 번만 받는다."""
+    return _result_list(api_get("/api/v1/sectors", token))
+
+
+def get_sector_members(token: str, sector_id: str, market: str, kind: str) -> list[dict]:
+    """섹터의 구성 종목(kind="stocks", 하위 섹터 포함) 또는 구성 ETF(kind="etfs", 하위 섹터 미포함)."""
+    if not SECTOR_ID_PATTERN.fullmatch(str(sector_id)):
+        raise ValueError(f"잘못된 섹터 ID입니다: {sector_id!r}")
+    if kind not in SECTOR_MEMBER_KINDS or market not in SECTOR_MARKETS:
+        raise ValueError(f"잘못된 조회 조건입니다: {kind!r}, {market!r}")
+    return _result_list(api_get(f"/api/v1/sectors/{sector_id}/{kind}", token, params={"marketCountry": market}))
 
 
 def get_prices(token: str, symbols: list[str]) -> dict[str, float]:
