@@ -11,6 +11,7 @@ from typing import Callable
 from cases import CASES
 from news import HEADLINES_PER_SYMBOL, SOURCE_MAX, TITLE_MAX, safe_url
 import charts as chart_mod
+from indicators import DEFAULTS as INDICATOR_DEFAULTS
 import trend as trend_mod
 import response as response_mod
 from screener import DEFAULT_PERIODS, MAX_PERIOD, MAX_PERIODS, MIN_PERIOD, SECTOR_KO, SECTOR_LABELS
@@ -118,6 +119,18 @@ TOOL_DEFINITIONS = [
         "description": "보유·관심 종목의 PER(후행·선행)·PSR·PBR·EPS·BPS·ROE와 비싼가·싼가(고평가·저평가) 판단을 조회합니다. 개별주는 같은 업종 S&P500 종목 표본의 중앙값 대비 PER·PSR·PBR, 성장 대비(PEG), 수익성 대비(ROE로 정당화되는 PBR)의 신호를 모아 '고평가 쪽·저평가 쪽·비슷함·판단 보류'로 말하고, 주식형 ETF는 PER·PBR을 시장(S&P500 ETF) 대비로만 봅니다(EPS·BPS·ROE 없음, 금·채권 ETF는 해당 없음). 적자 종목은 PER을 계산하지 않고, 한국 종목은 야후 재무 데이터가 불완전해 지표만 보여 주고 판단하지 않습니다. 야후 비공식 데이터 기반의 상대 평가이며 적정 주가나 투자 조언이 아닙니다. focus에 종목 이름·코드·카테고리 이름을 주면 그 종목만 봅니다(최대 4개).",
         "read_only": True,
         "input_schema": {"type": "object", "properties": {"focus": {"type": "string", "description": "볼 종목 이름·코드·카테고리 이름(예: AAPL, 엔비디아, SPY). 비우면 보유·관심 종목(최대 4개)"}}, "additionalProperties": False},
+    },
+    {
+        "name": "get_indicators",
+        "description": "종목의 기술적 보조지표를 조회합니다: RSI(기본 14일, 70 이상 과매수·30 이하 과매도), MACD(12·26·9, 시그널 위·아래와 최근 골든/데드크로스), 볼린저밴드(20일 ±2σ, %B 위치), 이동평균 교차(50일선·200일선, 마지막 골든/데드크로스 날짜). 종가로만 계산하고 현재 상태 이름과 최근 120거래일 시계열(그래프용)을 줍니다. 가격 흐름의 요약일 뿐 미래를 알려 주지 않으며(강한 추세에서는 과매수·과매도가 오래 이어짐) 매수·매도 신호가 아닙니다. 스토캐스틱·피보나치·캔들 패턴·지지/저항선은 없습니다. 보유·관심종목이 아니어도 focus에 이름·코드를 주면 됩니다(최대 4개).",
+        "read_only": True,
+        "input_schema": {"type": "object", "properties": {
+            "focus": {"type": "string", "description": "볼 종목 이름·코드(예: 엔비디아, TSLA, GLDM). 비우면 보유·관심 종목(최대 4개)"},
+            "indicators": {"type": "array", "items": {"type": "string", "enum": ["rsi", "macd", "bollinger", "ma_cross"]}, "description": "보고 싶은 지표. 비우면 전부"},
+            "rsi_period": {"type": "integer", "minimum": 5, "maximum": 30, "description": "RSI 기간(기본 14)"},
+            "overbought": {"type": "number", "minimum": 55, "maximum": 95, "description": "과매수 기준(기본 70)"},
+            "oversold": {"type": "number", "minimum": 5, "maximum": 45, "description": "과매도 기준(기본 30)"}},
+                         "additionalProperties": False},
     },
     {
         "name": "get_macro_drivers",
@@ -781,7 +794,53 @@ def valuation_result(data: dict) -> dict:
     }
 
 
+def indicators_result(data: dict) -> dict:
+    """보조지표 결과에서 숫자와 상태 이름만 남긴다(종목 4개, 시계열 120점)."""
+    def num(value, digits=2):
+        return _round(value, digits)
+
+    def series(values):
+        return [None if v is None else _round(v, 4) for v in (values or [])[:130]]
+    items = []
+    for it in (data.get("items") or [])[:4]:
+        row = {"symbol": str(it.get("symbol") or "")[:15], "name": str(it.get("name") or "")[:40], "held": bool(it.get("held")), "extra": bool(it.get("extra")),
+               "status": "ok" if it.get("status") == "ok" else "no_data"}
+        if row["status"] == "ok":
+            r, m, b, c = it.get("rsi"), it.get("macd"), it.get("bollinger"), it.get("ma_cross")
+            row.update({"as_of": str(it.get("as_of") or "")[:10], "close": num(it.get("close")), "params": {k: num(v) for k, v in (it.get("params") or {}).items()}})
+            if r:
+                row["rsi"] = {"value": num(r.get("value"), 1), "state": r.get("state") if r.get("state") in ("overbought", "oversold", "neutral") else "neutral",
+                              "days_in_state": int(_number(r.get("days_in_state")) or 0), "above_50": bool(r.get("above_50"))}
+            if m:
+                cross = m.get("cross") or None
+                row["macd"] = {"macd": num(m.get("macd"), 3), "signal": num(m.get("signal"), 3), "hist": num(m.get("hist"), 3), "above_signal": bool(m.get("above_signal")),
+                               "above_zero": bool(m.get("above_zero")), "hist_rising": bool(m.get("hist_rising")),
+                               "cross": {"type": cross.get("type") if cross.get("type") in ("golden", "dead") else "golden", "days_ago": int(_number(cross.get("days_ago")) or 0),
+                                         "date": str(cross.get("date") or "")[:10], "recent": bool(cross.get("recent")), "in_window": bool(cross.get("in_window"))} if cross else None}
+            if b:
+                row["bollinger"] = {"pct_b": num(b.get("pct_b"), 2), "state": b.get("state") if b.get("state") in ("above_upper", "below_lower", "near_upper", "near_lower", "inside") else "inside",
+                                    "upper": num(b.get("upper")), "mid": num(b.get("mid")), "lower": num(b.get("lower")), "bandwidth_pct": num(b.get("bandwidth_pct"), 1)}
+            if c:
+                lc = c.get("last_cross")
+                row["ma_cross"] = {"fast": int(_number(c.get("fast")) or 50), "slow": int(_number(c.get("slow")) or 200), "fast_above": bool(c.get("fast_above")),
+                                   "last_cross": {"type": lc.get("type") if lc.get("type") in ("golden", "dead") else "golden", "days_ago": int(_number(lc.get("days_ago")) or 0),
+                                                  "date": str(lc.get("date") or "")[:10]} if lc else None}
+            ser = it.get("series") or {}
+            row["series"] = {"dates": [str(d)[:10] for d in (ser.get("dates") or [])[:130]], **{k: series(ser.get(k)) for k in ("close", "rsi", "macd", "signal", "hist", "upper", "mid", "lower")}}
+        items.append(row)
+    return {
+        "items": items, "omitted": int(_number(data.get("omitted")) or 0), "focus": str(data.get("focus") or "")[:100], "focused": bool(data.get("focused")),
+        "indicators": [k for k in (data.get("indicators") or []) if k in ("rsi", "macd", "bollinger", "ma_cross")],
+        "limitations": [
+            "보조지표는 과거 가격을 숫자로 요약한 것이며 미래를 알려 주지 않습니다. 과매수·과매도는 '최근 상승·하락이 빨랐다'는 뜻일 뿐 반전을 뜻하지 않고, 강한 추세에서는 오래 이어집니다. 매수·매도 신호가 아닙니다.",
+            "기준은 널리 쓰이는 값(RSI 14일 70/30, MACD 12·26·9, 볼린저 20일 ±2σ, 이동평균 50/200일)이며 종가만 사용합니다(고가·저가가 필요한 스토캐스틱 등은 없습니다). 기준을 바꾸면 결과가 달라집니다.",
+            "이동평균 교차(골든·데드크로스)는 이미 오른·내린 뒤에 나타나는 후행 신호라 거짓 신호도 많습니다. 시세가 짧은 종목은 일부 지표를 계산하지 못합니다.",
+        ],
+    }
+
+
 _FORMATTERS: dict[str, Callable[[dict], dict]] = {
+    "get_indicators": indicators_result,
     "get_valuation": valuation_result,
     "get_factor_response": factor_response_result,
     "get_drawdown_analysis": drawdown_result,
@@ -835,7 +894,7 @@ INTENT_WORDS = {
     "history": ("과거", "역사", "예전", "그때", "당시", "사례", "쇼크", "충격", "위기", "리먼", "코로나", "닷컴", "이번처럼", "같은상황", "전에도"),
 }
 ENTITY_TOOLS = ("get_weekly_news", "get_macro_drivers", "get_outlook", "get_etf_breakdown")   # 종목 이름만 말했을 때 한꺼번에 보여 주는 도구
-FOCUS_TOOLS = frozenset(ENTITY_TOOLS) | {"get_macro_history", "get_macro_cases", "get_asset_drivers", "get_drawdown_analysis", "get_valuation"}                                                         # 질문에서 종목을 지정해 좁혀 볼 수 있는 도구
+FOCUS_TOOLS = frozenset(ENTITY_TOOLS) | {"get_macro_history", "get_macro_cases", "get_asset_drivers", "get_drawdown_analysis", "get_valuation", "get_indicators"}                                                         # 질문에서 종목을 지정해 좁혀 볼 수 있는 도구
 
 
 SIMILAR_WORDS = ("비슷", "닮", "유사", "같은시기", "같은때", "똑같")                                             # 견주는 말
@@ -995,12 +1054,40 @@ def is_valuation_query(text: str) -> bool:
     return any(w in compact for w in VALUATION_WORDS) or bool(_VALUATION_METRIC.search(str(text or "").lower()))
 
 
+# 기술적 보조지표 질문: "엔비디아 RSI 과매수야?", "TSLA MACD 골든크로스 났어?", "볼린저밴드 어때" — 종가로 계산하는 RSI·MACD·볼린저·이동평균 교차
+INDICATOR_WORDS = ("볼린저", "과매수", "과매도", "보조지표", "골든크로스", "데드크로스", "이평선교차", "이동평균교차", "엠에이씨디")
+_INDICATOR_LATIN = re.compile(r"(?<![a-z])(rsi|macd)(?![a-z])")
+
+
+def is_indicator_query(text: str) -> bool:
+    compact = _compact(text)
+    return any(w in compact for w in INDICATOR_WORDS) or bool(_INDICATOR_LATIN.search(str(text or "").lower()))
+
+
+def parse_indicator_query(text: str) -> dict:
+    """질문 문장 → 지표 도구 인자 {focus, indicators}. 말한 지표만(보조지표라고 하거나 특정 지표를 말하지 않으면 전부)."""
+    compact = _compact(text)
+    raw = str(text or "").lower()
+    picked = []
+    if "rsi" in raw or "과매수" in compact or "과매도" in compact:
+        picked.append("rsi")
+    if "macd" in raw or "엠에이씨디" in compact:
+        picked.append("macd")
+    if "볼린저" in compact:
+        picked.append("bollinger")
+    if any(w in compact for w in ("골든크로스", "데드크로스", "이평선교차", "이동평균교차")):
+        picked.append("ma_cross")
+    return {"focus": str(text or ""), "indicators": [] if "보조지표" in compact else picked}
+
+
 def plan_agent_query(question: str) -> dict:
     """짧은 한국어 질문을 허용된 읽기 도구 호출 계획으로 바꾼다(단어 일치 방식, 공백·유의어 허용)."""
     text = str(question or "").strip()
     if not text:
         raise ValueError("질문을 입력해 주세요.")
     compact = _compact(text)
+    if is_indicator_query(text) and not is_trend_query(text) and not is_screen_query(text):   # RSI·MACD·볼린저·골든크로스 같은 보조지표 질문(아무 종목)
+        return {"supported": True, "intents": ["indicators"], "tools": ["get_indicators"]}
     if is_valuation_query(text) and not is_trend_query(text) and not is_screen_query(text):   # 비싼가·싼가·PER 같은 밸류에이션 질문(보유·관심 종목)
         return {"supported": True, "intents": ["valuation"], "tools": ["get_valuation"]}
     if is_response_query(text):   # "금리가 오르면 금과 나스닥은?" — 요인이 움직일 때 자산의 평소 반응(보유 종목과 무관한 시장 질문)
@@ -1070,12 +1157,13 @@ INTENT_PLANS = {
     "drawdown": ["get_drawdown_analysis"],
     "response": ["get_factor_response"],
     "valuation": ["get_valuation"],
+    "indicators": ["get_indicators"],
     "holding": list(ENTITY_TOOLS),
 }
 INTENT_LABELS = {
     "weekly": "이번 주 점검", "rebalancing": "리밸런싱 계획", "tax": "세금 추정", "sector": "섹터 노출", "news": "종목 뉴스",
     "why": "왜 올랐나·내렸나", "outlook": "앞으로의 뷰", "etf": "ETF 구성 종목", "history": "과거 충격 때 반응",
-    "cases": "지금과 닮은 과거(사례집)", "drivers": "가장 영향받는 요인", "screen": "이동평균 스크리너", "trend": "미국 업종 ETF 상태", "drawdown": "고점 대비 낙폭 원인", "response": "요인이 움직일 때 자산 반응", "valuation": "밸류에이션(고평가·저평가)", "holding": "종목 종합",
+    "cases": "지금과 닮은 과거(사례집)", "drivers": "가장 영향받는 요인", "screen": "이동평균 스크리너", "trend": "미국 업종 ETF 상태", "drawdown": "고점 대비 낙폭 원인", "response": "요인이 움직일 때 자산 반응", "valuation": "밸류에이션(고평가·저평가)", "indicators": "보조지표(RSI·MACD·볼린저)", "holding": "종목 종합",
 }
 TEACHABLE_INTENTS = [k for k in INTENT_PLANS if k != "holding"]   # 종목 종합은 종목 이름이 있어야 하므로 가르치는 선택지에서 뺀다
 
@@ -1091,7 +1179,7 @@ PLAN_INTENT_NAMES = {
     frozenset({"tax"}): "tax", frozenset({"weekly_review"}): "weekly", frozenset({"weekly_review", "macro", "news"}): "weekly",
     frozenset({"rebalancing"}): "rebalancing", frozenset({"portfolio"}): "rebalancing", frozenset({"sector"}): "sector", frozenset({"news"}): "news",
     frozenset({"outlook"}): "outlook", frozenset({"etf"}): "etf", frozenset({"history"}): "history", frozenset({"cases"}): "cases",
-    frozenset({"macro", "news", "etf"}): "why", frozenset({"macro"}): "why", frozenset({"drivers"}): "drivers", frozenset({"screen"}): "screen", frozenset({"trend"}): "trend", frozenset({"drawdown"}): "drawdown", frozenset({"response"}): "response", frozenset({"valuation"}): "valuation",
+    frozenset({"macro", "news", "etf"}): "why", frozenset({"macro"}): "why", frozenset({"drivers"}): "drivers", frozenset({"screen"}): "screen", frozenset({"trend"}): "trend", frozenset({"drawdown"}): "drawdown", frozenset({"response"}): "response", frozenset({"valuation"}): "valuation", frozenset({"indicators"}): "indicators",
 }
 
 
@@ -1909,6 +1997,73 @@ def _compose_valuation(data: dict, bullets: list, tables: list, notes: list, lim
     limitations.extend(data.get("limitations", []))
 
 
+INDICATOR_RSI_TEXT = {"overbought": "과매수", "oversold": "과매도", "neutral": "중립"}
+INDICATOR_BB_TEXT = {"above_upper": "상단 돌파", "near_upper": "상단 근접", "inside": "밴드 안", "near_lower": "하단 근접", "below_lower": "하단 이탈"}
+INDICATOR_CROSS_TEXT = {"golden": "골든크로스", "dead": "데드크로스"}
+INDICATOR_CHART_ITEMS = 2          # 그래프는 앞의 두 종목까지(종목마다 최대 3개)
+
+
+def _compose_indicators(data: dict, bullets: list, tables: list, notes: list, limitations: list, charts: list) -> None:
+    """종목마다 한 줄 요약(RSI·MACD·볼린저·이동평균 교차 상태) + 볼린저 가격 그래프·RSI 그래프·MACD 그래프. 신호가 아니라 상태 요약이다."""
+    items = data.get("items") or []
+    wanted = data.get("indicators") or ["rsi", "macd", "bollinger", "ma_cross"]
+    if not items:
+        bullets.append("보조지표를 볼 종목이 없습니다(보유·관심종목이 없고 질문에서 종목을 찾지 못했습니다).")
+    shown = 0
+    for it in items:
+        name = it["name"] or it["symbol"]
+        if it["status"] != "ok":
+            notes.append(f"{name}: 시세가 짧거나 받지 못해 보조지표를 계산하지 못했습니다.")
+            continue
+        parts = []
+        r, m, b, c = it.get("rsi"), it.get("macd"), it.get("bollinger"), it.get("ma_cross")
+        if r and "rsi" in wanted:
+            parts.append(f"RSI {r['value']:.0f} ({INDICATOR_RSI_TEXT[r['state']]}" + (f", {r['days_in_state']}일째" if r["state"] != "neutral" and r["days_in_state"] > 1 else "") + ")")
+        if m and "macd" in wanted:
+            text = "MACD가 시그널 " + ("위" if m["above_signal"] else "아래")
+            if m["cross"] and m["cross"]["recent"]:
+                text += f" ({m['cross']['days_ago']}일 전 {INDICATOR_CROSS_TEXT[m['cross']['type']]})"
+            parts.append(text)
+        if b and "bollinger" in wanted:
+            parts.append(f"볼린저 {INDICATOR_BB_TEXT[b['state']]} (%B {b['pct_b']:.2f})")
+        if c and "ma_cross" in wanted:
+            text = f"{c['fast']}일선이 {c['slow']}일선 " + ("위" if c["fast_above"] else "아래")
+            if c["last_cross"]:
+                text += f" (마지막 {INDICATOR_CROSS_TEXT[c['last_cross']['type']]} {c['last_cross']['date']})"
+            parts.append(text)
+        bullets.append(f"{name}{_origin_tag(it)}: " + (" · ".join(parts) if parts else "시세가 짧아 선택한 지표를 계산하지 못했습니다"))
+        ser = it["series"]
+        P = {**INDICATOR_DEFAULTS, **{k: v for k, v in it.get("params", {}).items() if v is not None}}
+        if shown >= INDICATOR_CHART_ITEMS or len(ser["dates"]) < 3:
+            continue
+        shown += 1
+        labels = [d[2:] for d in ser["dates"]]
+        if b and "bollinger" in wanted:
+            charts.append(chart_mod.make("line", f"{name} 볼린저밴드 ({P['bb_period']:.0f}일 ±{P['bb_k']:g}σ)", labels,
+                                         [{"label": "종가", "color": "s1", "data": ser["close"]}, {"label": "상단", "color": "s2", "data": ser["upper"]},
+                                          {"label": "중심", "color": "s3", "data": ser["mid"]}, {"label": "하단", "color": "s2", "data": ser["lower"]}], "",
+                                         subtitle=f"%B {b['pct_b']:.2f} · {INDICATOR_BB_TEXT[b['state']]} (0=하단, 1=상단)", signed=False))
+        if r and "rsi" in wanted:
+            charts.append(chart_mod.make("line", f"{name} RSI ({P['rsi_period']:.0f}일)", labels, [{"label": "RSI", "color": "s1", "data": ser["rsi"]}], "",
+                                         subtitle=f"{r['value']:.0f} · {INDICATOR_RSI_TEXT[r['state']]}",
+                                         hlines=[{"value": P["overbought"], "text": f"과매수 {P['overbought']:.0f}", "color": "down"},
+                                                 {"value": P["oversold"], "text": f"과매도 {P['oversold']:.0f}", "color": "up"}],
+                                         height=220, signed=False, decimals=0, ymin=0, ymax=100,
+                                         caption="과매수·과매도는 최근 상승·하락이 빨랐다는 뜻일 뿐 반전을 보장하지 않습니다"))
+        if m and "macd" in wanted:
+            markers = []
+            if m["cross"] and m["cross"]["in_window"]:
+                index = len(ser["dates"]) - 1 - m["cross"]["days_ago"]
+                markers.append({"index": index, "text": f"{m['cross']['date'][5:]} {INDICATOR_CROSS_TEXT[m['cross']['type']]}", "color": "up" if m["cross"]["type"] == "golden" else "down"})
+            charts.append(chart_mod.make("line", f"{name} MACD ({P['macd_fast']:.0f}·{P['macd_slow']:.0f}·{P['macd_signal']:.0f})", labels,
+                                         [{"label": "MACD", "color": "s1", "data": ser["macd"]}, {"label": "시그널", "color": "s3", "data": ser["signal"]}], "",
+                                         subtitle="MACD가 시그널 " + ("위" if m["above_signal"] else "아래"), markers=markers, hlines=[{"value": 0, "text": "0", "color": "neutral"}],
+                                         height=220, decimals=2))
+    if data.get("omitted"):
+        notes.append(f"그 밖의 {data['omitted']}개 종목은 넣지 않았습니다(최대 4개).")
+    limitations.extend(data.get("limitations", []))
+
+
 ETF_FLAG_TEXT = {
     "low_coverage": "시세를 받은 상위 편입 종목의 비중이 작아 설명 범위가 좁습니다.",
     "diverged": "상위 편입 종목의 평균 등락과 '그 밖'의 암시 등락이 크게 달라, 움직임이 상위 종목에 쏠렸거나 공시 비중이 오래됐을 수 있습니다(많이 움직인 종목은 지금 비중이 공시보다 작아 기여가 크게 계산될 수 있음).",
@@ -2288,6 +2443,10 @@ def compose_agent_answer(results: dict[str, dict]) -> dict:
     if history_result:
         _compose_history(history_result, bullets, tables, notes, limitations)
         _charts_history(history_result, charts)
+
+    indicators_data = results.get("get_indicators")
+    if indicators_data:
+        _compose_indicators(indicators_data, bullets, tables, notes, limitations, charts)
 
     valuation_data = results.get("get_valuation")
     if valuation_data:

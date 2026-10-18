@@ -58,6 +58,13 @@ class MakeTest(unittest.TestCase):
         for bad in (-1, 9, True, "2", None):
             self.assertNotIn("decimals", charts.make("bar", "t", ["a"], [{"data": [1]}], decimals=bad))
 
+    def test_a_fixed_value_range_is_kept_only_when_numeric(self):
+        spec = charts.make("line", "t", ["a", "b"], [{"data": [40, 60]}], ymin=0, ymax=100)
+        self.assertEqual((spec["ymin"], spec["ymax"]), (0.0, 100.0))
+        bad = charts.make("line", "t", ["a", "b"], [{"data": [40, 60]}], ymin="x", ymax=float("nan"))
+        self.assertNotIn("ymin", bad)
+        self.assertNotIn("ymax", bad)
+
     def test_signed_colors(self):
         self.assertEqual(charts.signed_colors([1.5, -2, 0, None]), ["up", "down", "neutral", "neutral"])
 

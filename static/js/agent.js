@@ -47,6 +47,23 @@ async function loadAgentMisses() {
   } catch (e) { /* 다음에 다시 확인 */ }
 }
 
+// '기능 없음' 답변의 "이 기능 요청하기" 버튼: 누르면 주제별 요청 횟수가 이 컴퓨터에 쌓인다(다음에 많이 요청된 것부터 만든다).
+function renderAgentRequest(request) {
+  const box = $('agentRequest');
+  if (!request) { box.style.display = 'none'; return; }
+  const button = $('agentRequestBtn');
+  button.disabled = false;
+  button.textContent = '이 기능 요청하기 (' + request.topic + ')';
+  $('agentRequestText').textContent = request.count ? '지금까지 ' + request.count + '번 요청됨' : '';
+  button.onclick = async () => {
+    const { ok, data } = await postJson('/api/agent/feature-requests', { topic: request.topic, question: request.question });
+    if (!ok) return showMsg($('agentError'), data.error || '요청을 남기지 못했습니다.');
+    button.disabled = true;
+    $('agentRequestText').textContent = '요청을 남겼어요 (' + data.topic + ' · ' + data.count + '번째). 다음에 기능을 만들 때 많이 요청된 것부터 만들게요.';
+  };
+  box.style.display = '';
+}
+
 // 확신이 없을 때(문장이 비슷한 예시로 짐작했거나 못 알아들음) 무엇을 원했는지 고르는 버튼. 고르면 서버에 가르치고(이 컴퓨터에만 저장) 그 질문을 다시 처리한다.
 function renderAgentTeach(teach) {
   const box = $('agentTeach');
@@ -244,10 +261,11 @@ async function runAgentQuestion() {
     $('agentCharts').style.display = isAi ? 'none' : '';
     $('agentNotes').style.display = isAi ? 'none' : '';
     $('agentLimitsWrap').style.display = !isAi && (data.answer.limitations || []).length ? '' : 'none';
-    if (isAi) { renderAgentSuggestions([]); renderAgentTeach(null); renderAgentLearned(null); }
+    if (isAi) { renderAgentSuggestions([]); renderAgentRequest(null); renderAgentTeach(null); renderAgentLearned(null); }
     if (!isAi) {
       renderAgentList('agentBullets', data.answer.bullets);
       renderAgentSuggestions(data.answer.suggestions);
+      renderAgentRequest(data.answer.request);
       renderAgentTeach(data.answer.teach);
       renderAgentLearned(data.answer.learned);
       renderAgentCharts($('agentCharts'), data.answer.charts);
@@ -304,6 +322,20 @@ $('agentMissViewBtn').addEventListener('click', async () => {
     ? data.items.map(r => '[' + (kinds[r.kind] || r.kind) + (r.guess ? ' → ' + r.guess : '') + '] ' + r.question + '  (' + r.at + ')').join('\n')
     : '기록이 없습니다.' + (data.enabled ? '' : ' (기록이 꺼져 있습니다)');
   list.style.display = '';
+});
+$('agentRequestViewBtn').addEventListener('click', async () => {
+  const { ok, data } = await getJson('/api/agent/feature-requests');
+  if (!ok) return;
+  const list = $('agentRequestList');
+  list.textContent = data.items.length
+    ? data.items.map(r => r.count + '번  ' + r.topic + '  (마지막 ' + r.last + ')\n    ' + r.examples.join('\n    ')).join('\n')
+    : '요청이 없습니다.';
+  $('agentRequestCount').textContent = '주제 ' + data.items.length + '개';
+  list.style.display = '';
+});
+$('agentRequestClearBtn').addEventListener('click', async () => {
+  const { ok } = await postJson('/api/agent/feature-requests', { clear: true });
+  if (ok) { $('agentRequestCount').textContent = '모두 지웠습니다'; $('agentRequestList').style.display = 'none'; }
 });
 $('agentTeachClearBtn').addEventListener('click', async () => {
   const { ok, data } = await postJson('/api/agent/teach', { clear: true });

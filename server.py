@@ -34,8 +34,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 from agent_loop import follow_ups, observations
-from agent_tools import (DRAWDOWN_WORDS, FOCUS_TOOLS, INTENT_LABELS, INTENT_WORDS, VALUATION_WORDS, TEACHABLE_INTENTS, TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
-                         parse_response_query, parse_screen_query, parse_trend_query, plan_agent_query, plan_for_holding, plan_for_intent, plan_intent_name, suggest_questions)
+from agent_tools import (DRAWDOWN_WORDS, INDICATOR_WORDS, FOCUS_TOOLS, INTENT_LABELS, INTENT_WORDS, VALUATION_WORDS, TEACHABLE_INTENTS, TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
+                         parse_indicator_query, parse_response_query, parse_screen_query, parse_trend_query, plan_agent_query, plan_for_holding, plan_for_intent, plan_intent_name, suggest_questions)
 from intent_examples import DEFAULT_EXAMPLES
 from intent_matcher import MIN_CONTENT, IntentMatcher, normalize as normalize_question
 from common import ApiError, normalize_symbols, parallel_map, to_float
@@ -46,9 +46,11 @@ from secret_store import delete_secret as delete_fred_secret, keychain_supported
 from fred import FredError, PREFIX as FRED_PREFIX, SERIES_IDS as FRED_IDS, SLOW_SERIES_IDS as FRED_SLOW_IDS, fetch_series as fetch_fred_series, valid_key as valid_fred_key, yoy_series
 from macro import FACTOR_BY_SYMBOL, FACTORS, daily_changes, explain_asset, factor_group, rank_drivers, weekly_factor_moves, window_pressure
 from causes import rank_themes, themes_in
+from indicators import INDICATORS, analyze as analyze_indicators
 from fundamentals import (INFO_CACHE_TTL, assess_etf, assess_stock, fetch_info as fetch_fundamentals, is_korean as is_korean_stock, peer_stats, sample_peers)
 from response import (DEFAULT_ASSETS as DEFAULT_RESPONSE_ASSETS, DEFAULT_HORIZON as DEFAULT_RESPONSE_HORIZON, HORIZONS as RESPONSE_HORIZONS, MAX_ASSETS as MAX_RESPONSE_ASSETS,
                       analyze as analyze_response, resolve_asset, resolve_factor)
+from unknown_policy import NO_FEATURE as NO_FEATURE_TOPICS, match_limit, respond as respond_unknown
 from symbols import candidate_tokens, choose as choose_symbol
 from drawdown import RISK_SYMBOLS, day_movers, search_term, worst_days
 from outlook import build_outlook
@@ -830,6 +832,35 @@ def macro_drivers_view(req: Request, args: dict | None = None) -> dict:
     return {"factors": weekly_factor_moves(factor_series), "items": items, "omitted": omitted, "focus": focus, "focused": focused}
 
 
+INDICATOR_YEARS = 3            # 200일 이동평균 교차까지 계산하려고 받는 시세 기간
+INDICATOR_MAX = 4
+
+
+def indicators_view(req: Request, args: dict | None = None) -> dict:
+    """RSI·MACD·볼린저밴드·이동평균(50/200일) 교차와 상태, 그래프용 최근 120거래일 시계열. 보유·관심종목이 아니어도 이름·코드로 찾는다(최대 4개). 읽기 전용.
+    args: focus(종목), indicators(["rsi","macd","bollinger","ma_cross"] 중 일부, 비우면 전부), rsi_period·overbought·oversold·bb_period·bb_k(기준 바꾸기, 범위 안의 값만)."""
+    args = args if isinstance(args, dict) else {}
+    focus = str(args.get("focus") or "").strip()[:200]
+    entries, omitted = portfolio_entries(req)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
+    entries = [e for e in entries if e["yahoo"]]
+    omitted += max(0, len(entries) - INDICATOR_MAX)
+    entries = entries[:INDICATOR_MAX]
+    closes = parallel_map(lambda e: yahoo_closes(e["yahoo"], INDICATOR_YEARS), entries, FACTOR_WORKERS)
+    wanted = [k for k in (args.get("indicators") or []) if k in INDICATORS] or list(INDICATORS)
+    items = []
+    for e, c in zip(entries, closes):
+        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": "no_data"}
+        if c:
+            dates = sorted(c)
+            got = analyze_indicators(dates, [c[d] for d in dates], args)
+            if got:
+                item.update(got)
+                item["status"] = "ok"
+        items.append(item)
+    return {"items": items, "omitted": omitted, "focus": focus, "focused": focused, "indicators": wanted}
+
+
 VALUATION_MAX = 4              # 한 번에 밸류에이션을 보는 종목 수
 VALUATION_PEER_SAMPLE = 25     # 섹터 비교 표본(같은 업종 S&P500 종목) 수
 VALUATION_WORKERS = 6
@@ -1066,8 +1097,8 @@ _extra_lock = threading.Lock()
 
 def extra_skip_words() -> frozenset:
     """검색에 보내지 않을 낱말: 질문 의도 낱말(고평가·요인·뉴스…)과 종목이 아닌 영문 약어."""
-    words = {w for ws in INTENT_WORDS.values() for w in ws} | set(VALUATION_WORDS) | set(DRAWDOWN_WORDS) | {w.lower() for w in NOT_TICKERS}
-    return frozenset(words | {"per", "pbr", "psr", "eps", "bps", "roe", "etf", "ma"})
+    words = {w for ws in INTENT_WORDS.values() for w in ws} | set(VALUATION_WORDS) | set(DRAWDOWN_WORDS) | set(INDICATOR_WORDS) | {w.lower() for w in NOT_TICKERS}
+    return frozenset(words | {"per", "pbr", "psr", "eps", "bps", "roe", "etf", "ma", "rsi", "macd"})
 
 
 def resolve_extra_entries(req: Request, text: str, entries: list[dict]) -> list[dict]:
@@ -1137,7 +1168,7 @@ NOT_TICKERS = frozenset({"ETF", "AI", "MA", "RSI", "USD", "KRW", "JPY", "EUR", "
 def focus_info(req: Request, question: str) -> dict:
     """규칙 기반 모드용: 질문이 내 종목(코드·이름·카테고리)을 가리키는지(found), 질문 예시에 쓸 내 종목 이름(names),
     질문에 적혔지만 보유·관심종목에 없는 영문 코드(unknown). 계좌 조회가 실패하면 아무것도 못 찾은 것으로 본다."""
-    empty = {"found": False, "names": [], "unknown": []}
+    empty = {"found": False, "names": [], "unknown": [], "extra_names": []}
     try:
         entries, _omitted = portfolio_entries(req)
         categories = load_rebalance_config(req.store)["targets"]
@@ -1149,7 +1180,7 @@ def focus_info(req: Request, question: str) -> dict:
     known = {e["symbol"].upper() for e in entries + extras} | {w.upper() for e in entries + extras for w in re.findall(r"[A-Za-z0-9]+", e["name"])}
     unknown = [tok for tok in dict.fromkeys(re.findall(r"(?<![A-Za-z0-9])[A-Z]{2,6}(?![A-Za-z0-9])", question))
                if tok not in NOT_TICKERS and tok not in known and not any(typo_mentions(tok, e["symbol"]) for e in entries)]
-    return {"found": found, "names": [e["name"] for e in entries[:4]], "unknown": unknown[:3]}
+    return {"found": found, "names": [e["name"] for e in entries[:4]], "unknown": unknown[:3], "extra_names": [e["name"] for e in extras]}
 
 
 def outlook_view(req: Request, args: dict | None = None) -> dict:
@@ -1538,6 +1569,8 @@ def execute_agent_tool(req: Request, name: str, args: dict | None = None) -> dic
         payload = ma_screen_view(req, args if isinstance(args, dict) else None)
     elif name == "get_sector_trends":
         payload = trend_view(req, args if isinstance(args, dict) else None)
+    elif name == "get_indicators":
+        payload = indicators_view(req, args if isinstance(args, dict) else None)
     elif name == "get_valuation":
         payload = valuation_view(req, args if isinstance(args, dict) else None)
     elif name == "get_factor_response":
@@ -1590,6 +1623,7 @@ def forget_learned_intent(store: UserStore, question: str) -> bool:
 # 놓친 질문 기록(사용자가 켠 경우만): 처리하지 못했거나 문장 유사도로 짐작한 질문을 이 컴퓨터에만 모아 두었다가, 나중에 예시 문장을 한 번에 보강하는 데 쓴다.
 MISSES_FILE = "agent_misses.json"
 MAX_MISSES = 200
+UNCLEAR_MIN_SCORE = 0.12        # 못 알아들은 질문에서 '혹시 이런 질문인가요?' 후보로 보여 줄 최소 유사도(질문 종류 확정 기준 0.30보다 낮다)
 AUTO_LEARN_MIN_SCORE = 0.20     # 못 알아들은 질문을 이어서 물어본 질문과 자동 연결할 때, 이어 물은 의도의 예시와 최소한 이만큼은 비슷해야 한다(잡담 차단)
 AUTO_LEARN_WINDOW = 300         # 초. 이 안에 이어서 물어본 경우만
 
@@ -1689,6 +1723,58 @@ def post_agent_misses(req: Request):
     return {"ok": True, "enabled": enabled, "count": len(items)}
 
 
+# 기능 요청 큐: '기능 없음'이라고 알린 질문에서 사용자가 버튼을 누르면 주제별 요청 횟수와 예시를 이 컴퓨터에만 모아 둔다(다음 개발 때 많이 요청된 것부터).
+FEATURE_REQUESTS_FILE = "feature_requests.json"
+MAX_FEATURE_TOPICS = 50
+MAX_FEATURE_EXAMPLES = 3
+FEATURE_TOPICS = frozenset(t[0] for t in NO_FEATURE_TOPICS) | {"기타"}
+
+
+def load_feature_requests(store: UserStore) -> dict:
+    data = store.read_json(FEATURE_REQUESTS_FILE)
+    rows = data.get("topics", {}) if isinstance(data, dict) else {}
+    out = {}
+    for topic, r in rows.items() if isinstance(rows, dict) else []:
+        if topic in FEATURE_TOPICS and isinstance(r, dict) and isinstance(r.get("count"), int):
+            out[topic] = {"count": max(1, r["count"]), "last": str(r.get("last") or "")[:16], "examples": [str(x)[:MAX_LEARNED_QUESTION] for x in (r.get("examples") or [])[:MAX_FEATURE_EXAMPLES]]}
+    return out
+
+
+def record_feature_request(store: UserStore, topic: str, question: str) -> dict:
+    """주제의 요청 횟수를 1 올리고 예시 질문을 남긴다(같은 질문은 한 번만, 예시는 최근 3개). 저장한 뒤 {topic, count, total_topics}."""
+    topics = load_feature_requests(store)
+    row = topics.get(topic) or {"count": 0, "last": "", "examples": []}
+    row["count"] += 1
+    row["last"] = time.strftime("%Y-%m-%d %H:%M")
+    q = question.strip()[:MAX_LEARNED_QUESTION]
+    if q and q not in row["examples"]:
+        row["examples"] = (row["examples"] + [q])[-MAX_FEATURE_EXAMPLES:]
+    topics[topic] = row
+    if len(topics) > MAX_FEATURE_TOPICS:                     # 요청이 적은 주제부터 버린다
+        for key in sorted(topics, key=lambda k: topics[k]["count"])[:len(topics) - MAX_FEATURE_TOPICS]:
+            del topics[key]
+    store.write_json(FEATURE_REQUESTS_FILE, {"topics": topics})
+    return {"topic": topic, "count": row["count"], "total_topics": len(topics)}
+
+
+@route("GET", "/api/agent/feature-requests")
+def get_feature_requests(req: Request):
+    topics = load_feature_requests(req.store)
+    return {"items": [{"topic": t, **r} for t, r in sorted(topics.items(), key=lambda kv: (-kv[1]["count"], kv[0]))]}
+
+
+@route("POST", "/api/agent/feature-requests")
+def post_feature_requests(req: Request):
+    """기능 요청 남기기({topic, question}) 또는 모두 지우기({clear: true}). 주제는 '기능 없음' 목록에 있는 이름만 받는다."""
+    if req.body.get("clear"):
+        req.store.write_json(FEATURE_REQUESTS_FILE, {"topics": {}})
+        return {"ok": True, "items": []}
+    topic = str(req.body.get("topic") or "")
+    if topic not in FEATURE_TOPICS:
+        raise ApiError(400, "알 수 없는 기능 주제입니다.")
+    return {"ok": True, **record_feature_request(req.store, topic, str(req.body.get("question") or ""))}
+
+
 @route("POST", "/api/agent/query", max_body=65536)  # 대화 문맥(최근 8개 × 2,000자, 한글은 글자당 3바이트)이 기본 8KB를 넘는다
 def post_agent_query(req: Request):
     """API 키가 있으면 LLM 도구 호출, 없으면 규칙 기반 대체 경로로 질문을 처리한다."""
@@ -1720,10 +1806,11 @@ def post_agent_query(req: Request):
     learned_now = None
     if via is None and plan["supported"] and pending and time.time() - pending["ts"] <= AUTO_LEARN_WINDOW:
         learned_now = learn_from_followup(req.store, matcher, pending["question"], question, plan)
-    info = focus_info(req, question) if (not plan["supported"] or FOCUS_TOOLS & set(plan["tools"])) else {"found": False, "names": [], "unknown": []}
-    if not plan["supported"] and info["found"]:   # 키워드는 없지만 내 종목·카테고리를 가리키면 그 종목의 움직임·요인·보도·앞으로의 뷰를 한꺼번에 보여 준다
+    limit = match_limit(question)                    # 도구가 없다고 아는 주제(배당 내역·RSI·목표주가…)나 주문 요청
+    info = focus_info(req, question) if (not plan["supported"] or FOCUS_TOOLS & set(plan["tools"])) else {"found": False, "names": [], "unknown": [], "extra_names": []}
+    if not plan["supported"] and info["found"] and not limit:   # 키워드는 없지만 내 종목·카테고리를 가리키면 그 종목의 움직임·요인·보도·앞으로의 뷰를 한꺼번에 보여 준다
         plan = plan_for_holding()
-    elif not plan["supported"]:                    # 그래도 못 고르면 문장이 비슷한 예시의 의도로(확신이 있을 때만)
+    elif not plan["supported"] and not limit:      # 그래도 못 고르면 문장이 비슷한 예시의 의도로(확신이 있을 때만)
         guess = matcher.classify(question)
         if guess and guess["intent"] != "holding":
             via, plan, understood = "similar", plan_for_intent(guess["intent"]), guess
@@ -1737,7 +1824,8 @@ def post_agent_query(req: Request):
     for name in plan["tools"]:
         run_tool(name, (parse_screen_query(question) if name == "get_ma_screen" else parse_trend_query(question) if name == "get_sector_trends"
                         else parse_response_query(question) if name == "get_factor_response"
-                        else {"focus": question, "case": question} if name == "get_macro_cases" else {"focus": question}) if (name in FOCUS_TOOLS or name in ("get_ma_screen", "get_sector_trends", "get_factor_response")) else None)  # 규칙 기반 모드는 질문 문장에서 종목·사례·요인을 찾는다
+                        else parse_indicator_query(question) if name == "get_indicators"
+                        else {"focus": question, "case": question} if name == "get_macro_cases" else {"focus": question}) if (name in FOCUS_TOOLS or name in ("get_ma_screen", "get_sector_trends", "get_factor_response", "get_indicators")) else None)  # 규칙 기반 모드는 질문 문장에서 종목·사례·요인을 찾는다
     extra_failed = []
     if plan["supported"]:       # 결과를 보고 덧붙여 볼 도구를 고른다(에이전트 루프, 최대 MAX_EXTRA_STEPS번)
         for step in [s for s in follow_ups(results) if s["tool"] not in results]:
@@ -1749,22 +1837,28 @@ def post_agent_query(req: Request):
     answer["bullets"].extend(observations(results))
     if extra_failed:
         answer["notes"].append("추가로 확인하려던 것을 가져오지 못했습니다: " + " / ".join(extra_failed))
-    if info["unknown"]:
-        names = ", ".join(info["unknown"])
-        if not plan["supported"]:
-            answer["bullets"].insert(0, f"{names}은(는) 보유·관심종목에 없어 볼 수 없습니다. 관심종목에 추가하면 같은 방식으로 볼 수 있습니다.")
-        else:
-            answer["notes"].append(f"{names}은(는) 보유·관심종목에 없어 " + ("볼 수 없습니다" if info["found"] else "전체를 보여줍니다")
-                                   + ". 관심종목에 추가하면 같은 방식으로 볼 수 있습니다.")
-    if not plan["supported"]:
-        answer["suggestions"] = suggest_questions(info["names"])
+    if plan["supported"] and info["unknown"]:
+        answer["notes"].append(f"{', '.join(info['unknown'])}을(를) 종목으로 찾지 못했습니다(토스에서 거래 가능한 한국·미국 종목만 조회됩니다)." + ("" if info["found"] else " 보유·관심종목 전체를 보여줍니다."))
+    if plan["supported"] and limit:                  # 질문의 일부(배당 내역 등)는 아직 못 한다는 것을 숨기지 않는다
+        answer["notes"].append("※ " + limit["message"])
+    policy = None
+    if not plan["supported"]:                        # 못 답하는 이유(기능 없음·주문·종목 못 찾음·못 알아들음)에 맞게 정직하게
+        ranked = [(i, sc) for i, sc in matcher.scores(question) if i != "holding" and sc >= UNCLEAR_MIN_SCORE][:2]
+        candidates = [{"label": INTENT_LABELS[i], "example": DEFAULT_EXAMPLES[i][0]} for i, _sc in ranked if i in INTENT_LABELS and DEFAULT_EXAMPLES.get(i)]
+        policy = respond_unknown(question, limit=limit, unknown=info["unknown"], candidates=candidates, names=info["names"], subject=info.get("extra_names", []))
+        answer["headline"], answer["bullets"], answer["suggestions"], answer["unknown_kind"] = policy["headline"], policy["bullets"], policy["suggestions"], policy["kind"]
+        if limit and limit["kind"] == "no_feature":      # 이 기능을 원한다는 표시를 남길 수 있게(버튼) — 요청이 많은 것부터 다음에 만든다
+            counts = load_feature_requests(req.store)
+            answer["request"] = {"topic": limit["topic"], "question": question[:MAX_LEARNED_QUESTION], "count": counts.get(limit["topic"], {}).get("count", 0)}
     if via == "taught":
         answer["notes"].append("가르쳐 주신 대로 처리했습니다.")
     if learned_now:
         answer["learned"] = learned_now
     if via == "similar" or not plan["supported"]:   # 확신이 없는 경우(비슷한 문장으로 짐작했거나 못 알아들음): 바로잡을 수 있게 고르는 버튼을 준다
         req.session["intent_pending"] = {"question": question[:MAX_LEARNED_QUESTION], "ts": time.time()}
-        record_miss(req.store, question, "guessed" if via == "similar" else "unplaced", understood["intent"] if understood else None)
+        record_miss(req.store, question, "guessed" if via == "similar" else (f"no_feature:{limit['topic']}" if limit else policy["kind"] if policy and policy["kind"] == "not_found" else "unplaced"),
+                    understood["intent"] if understood else None)
+    if (via == "similar" or not plan["supported"]) and not limit and not (policy and policy["kind"] == "not_found"):   # 기능이 없다고 알려 준 질문엔 고르기 버튼을 주지 않는다
         answer["teach"] = {"question": question[:MAX_LEARNED_QUESTION],
                            "understood": {"intent": understood["intent"], "label": INTENT_LABELS[understood["intent"]], "score": round(understood["score"], 2)} if understood else None,
                            "choices": [{"intent": k, "label": INTENT_LABELS[k]} for k in TEACHABLE_INTENTS]}

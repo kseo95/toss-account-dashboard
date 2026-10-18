@@ -20,11 +20,11 @@ def all_text(answer):
 
 
 class AgentToolsTest(unittest.TestCase):
-    def test_only_sixteen_read_only_tools_are_exposed(self):
+    def test_only_seventeen_read_only_tools_are_exposed(self):
         self.assertEqual({t["name"] for t in TOOL_DEFINITIONS}, {
             "get_portfolio_overview", "get_weekly_risk_report", "estimate_liquidation_tax", "get_sector_exposure", "get_weekly_news",
             "get_macro_drivers", "get_outlook", "get_etf_breakdown", "get_macro_history", "get_macro_cases", "get_asset_drivers", "get_ma_screen", "get_sector_trends",
-            "get_drawdown_analysis", "get_factor_response", "get_valuation",
+            "get_drawdown_analysis", "get_factor_response", "get_valuation", "get_indicators",
         })
         outlook_tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "get_outlook")                  # 종목 지정 인자만 받는다
         self.assertEqual(list(outlook_tool["input_schema"]["properties"]), ["focus"])
