@@ -34,6 +34,7 @@
       <button type="button" class="page-tab active" data-page="portfolio">포트폴리오</button>
       <button type="button" class="page-tab" data-page="report">주간 리포트</button>
       <button type="button" class="page-tab" data-page="tax">세금</button>
+      <button type="button" class="page-tab" data-page="agent">Agent</button>
     </div>
     <div id="pagePortfolio">
     <div id="summaryCards">
@@ -57,7 +58,7 @@
           <div id="rebalanceCategories"></div>
           <button id="addCategoryBtn" type="button" class="rb-add">+ 카테고리 추가</button>
           <div class="rb-rest-row">
-            <label for="restPctInput">미분류 종목 기본 목표%(각각)</label>
+            <label for="restPctInput">미분류 종목 표시용 목표%(각각, 계산에는 쓰이지 않음)</label>
             <input id="restPctInput" type="number" min="0" max="100" step="0.1">
           </div>
           <div id="rebalanceSum" class="rb-sum"></div>
@@ -66,6 +67,18 @@
             <button id="resetRebalanceBtn" type="button">되돌리기</button>
             <span id="rebalanceSaved">저장됨</span>
           </div>
+        </details>
+
+        <details class="settings">
+          <summary>리밸런싱 계획</summary>
+          <div id="rebalancePlanStatus" class="rb-plan-status"></div>
+          <div class="table-scroll">
+            <table><thead><tr>
+              <th>항목</th><th>현재</th><th>목표</th><th>조정 금액</th>
+            </tr></thead><tbody id="rebalancePlanRows"></tbody></table>
+          </div>
+          <div id="rebalancePlanTotals" class="rb-plan-totals"></div>
+          <ul id="rebalancePlanWarnings" class="rb-plan-warnings"></ul>
         </details>
       </div>
 
@@ -100,6 +113,52 @@
         <div id="cashSymbolPicker" style="margin-top:10px;"></div>
         <button id="saveCashSymbolsBtn">저장</button>
         <span id="cashSymbolsSaved">저장됨</span>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>섹터 노출</h2>
+      <div class="rb-hint" style="line-height:1.5;">섹터 분류와 노출%는 직접 입력한 값입니다. ETF의 노출%는 추정치이며 실제 구성 비중과 다를 수 있습니다.</div>
+      <div id="sectorExposureStatus" class="rb-plan-status"></div>
+      <div class="table-scroll">
+        <table><thead><tr>
+          <th>섹터</th><th>대표 티커</th><th>내 노출(원)</th><th>비중(%)</th><th>연결 종목</th>
+        </tr></thead><tbody id="sectorExposureRows"></tbody></table>
+      </div>
+      <div id="sectorUnmapped" class="rb-hint" style="margin-top:8px; line-height:1.5;"></div>
+
+      <details class="settings">
+        <summary>섹터 설정</summary>
+        <div id="sectorMapError" class="rb-error"></div>
+
+        <div class="rb-hint" style="margin-top:10px; line-height:1.5;">토스증권 섹터 분류로 보유 종목의 섹터 후보를 찾아 제안합니다. 제안은 아래 초안에 추가만 되고, 저장을 눌러야 반영됩니다. 주식은 대분류, ETF는 소속된 섹터 전체를 보여주며 ETF의 노출%는 직접 입력하세요(토스는 구성 비중을 주지 않습니다).</div>
+        <div class="rb-actions">
+          <button id="sectorAutoBtn" type="button">토스 분류로 자동 채우기</button>
+          <span id="sectorAutoStatus" class="rb-hint"></span>
+        </div>
+        <div id="sectorAutoError" class="rb-error"></div>
+        <div id="sectorAutoRows"></div>
+        <div class="rb-actions" id="sectorAutoActions" style="display:none;">
+          <button id="applySectorAutoBtn" type="button">선택한 항목을 초안에 추가</button>
+          <span id="sectorAutoApplied" class="rb-hint"></span>
+        </div>
+
+        <div class="rb-hint" style="margin-top:14px;">섹터 (대표 티커는 선택 — 그 섹터의 가격 흐름을 대표하는 Yahoo 티커, 예: SOXX)</div>
+        <div id="sectorList"></div>
+        <button id="addSectorBtn" type="button" class="rb-add">+ 섹터 추가</button>
+
+        <div class="rb-hint" style="margin-top:14px;">종목 배정 (한 종목의 노출% 합계는 100 이하)</div>
+        <div class="watchlist-search">
+          <input id="sectorSearchInput" type="text" placeholder="종목명 또는 티커로 검색해서 배정 추가" autocomplete="off" spellcheck="false">
+          <div id="sectorSuggestions" class="watchlist-suggestions" style="display:none;"></div>
+        </div>
+        <div id="sectorAssignments"></div>
+
+        <div class="rb-actions">
+          <button id="saveSectorMapBtn">저장</button>
+          <button id="resetSectorMapBtn" type="button">되돌리기</button>
+          <span id="sectorMapSaved">저장됨</span>
+        </div>
       </details>
     </div>
 
@@ -405,16 +464,98 @@
         </tr></thead><tbody id="taxReference"></tbody></table></div>
       </div>
     </div>
+    <div id="pageAgent" style="display:none;">
+      <div class="agent-hero">
+        <div><h2>포트폴리오 점검 Agent</h2><p>질문에 맞는 계좌 도구를 골라 실행하고, 계산 결과를 한 번에 정리합니다.</p></div>
+        <span id="agentMode" class="agent-mode">연결 확인 중 · 읽기 전용</span>
+      </div>
+      <div class="card">
+        <details class="settings">
+          <summary>AI 연결 설정</summary>
+          <p class="rb-hint">Anthropic API 키는 현재 서버 세션 메모리에만 보관되며 파일에 저장되지 않습니다. 키가 없으면 제한된 규칙 기반 모드로 작동합니다. Claude 앱·Claude Code 구독과는 별개로, API 키(console.anthropic.com)가 있어야 AI 모드를 쓸 수 있고 사용량만큼 과금됩니다.</p>
+          <div class="agent-config-row">
+            <label>Anthropic API 키<input id="agentApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="새 키를 입력할 때만 (sk-ant-…)"></label>
+            <label>모델<input id="agentModel" type="text" list="agentModelList" value="claude-opus-5-5" spellcheck="false"><datalist id="agentModelList"><option value="claude-opus-5-5"></option><option value="claude-sonnet-5-5"></option><option value="claude-haiku-5-5"></option></datalist></label>
+          </div>
+          <p class="rb-hint">선택: FRED API 키(fred.stlouisfed.org에서 무료 발급)를 넣으면 연방기금금리·10년 실질금리·기대인플레이션·장단기 금리차를 요인 분석과 거시 사례집에 함께 씁니다. 이 키는 기본적으로 서버 세션 메모리에만 보관되고 AI 모드와는 무관합니다. 아래에서 "키체인에 저장"을 고르면 이 컴퓨터의 macOS 키체인에 저장해 서버를 다시 켜도 자동으로 연결됩니다(파일에는 저장되지 않으며, 이 서버를 쓰는 모든 사용자에게 적용되는 개인 PC용 기능입니다). 없으면 야후의 대용 시세로 계속합니다. <span id="fredStatus"></span></p>
+          <div class="agent-config-row">
+            <label>FRED API 키<input id="fredApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="새 키를 입력할 때만 (영문 소문자·숫자 32자)"></label>
+            <label id="fredSaveLabel" style="flex-direction:row;align-items:center;gap:6px;"><input id="fredSave" type="checkbox"> 이 컴퓨터 키체인에 저장 (서버를 다시 켜도 자동 연결)</label>
+          </div>
+          <div class="rb-actions">
+            <button type="button" id="agentConfigSaveBtn">연결 저장</button>
+            <button type="button" id="agentConfigClearBtn">키 제거</button>
+            <button type="button" id="fredClearBtn">FRED 키 제거(이번 세션)</button>
+            <button type="button" id="fredForgetBtn">키체인의 FRED 키 삭제</button>
+            <span id="agentConfigSaved" class="rb-hint" style="display:none;">저장됨</span>
+          </div>
+          <div id="agentConfigError" class="rb-error"></div>
+        </details>
+        <details class="settings">
+          <summary>질문 이해하기 (학습)</summary>
+          <p class="rb-hint">못 알아들은 질문 뒤에 비슷한 뜻의 질문을 키워드로 다시 물으면 앞 질문을 그 뜻으로 자동 연결해 기억합니다(연결하면 답변 위에 알리고 취소할 수 있습니다). 아래를 켜면 처리하지 못했거나 짐작만 한 질문을 이 컴퓨터에만 기록해 두고, 나중에 예시 문장을 한 번에 보강하는 데 씁니다(기본은 꺼짐). 모두 비용이 들지 않습니다.</p>
+          <label style="flex-direction:row;align-items:center;gap:6px;"><input id="agentMissEnable" type="checkbox"> 놓친 질문 기록하기 (이 컴퓨터에만 저장)</label>
+          <div class="rb-actions">
+            <button type="button" id="agentMissViewBtn">기록 보기</button>
+            <button type="button" id="agentMissClearBtn">기록 지우기</button>
+            <span id="agentMissCount" class="rb-hint"></span>
+          </div>
+          <pre id="agentMissList" class="rb-hint" style="display:none;white-space:pre-wrap;"></pre>
+        </details>
+      </div>
+      <div class="card">
+        <div id="agentConversation" class="agent-conversation"></div>
+        <div class="agent-samples">
+          <button type="button" data-agent-question="이번 주 무엇을 확인해야 해?">이번 주 무엇을 확인해야 해?</button>
+          <button type="button" data-agent-question="리밸런싱 계획 보여줘">리밸런싱 계획 보여줘</button>
+          <button type="button" data-agent-question="전부 팔면 세금은?">전부 팔면 세금은?</button>
+        </div>
+        <div class="agent-query-row">
+          <input id="agentQuestion" type="text" maxlength="300" placeholder="계좌에 관해 질문해 보세요">
+          <button type="button" id="agentRunBtn">확인</button>
+        </div>
+        <button type="button" id="agentClearBtn" class="agent-clear">대화 지우기</button>
+        <div id="agentError" class="rb-error"></div>
+      </div>
+      <div id="agentResult" style="display:none;">
+        <div class="card">
+          <h2>실행 경로<span class="sub">어떤 도구를 사용했는지 그대로 표시합니다</span></h2>
+          <div id="agentTrace" class="agent-trace"></div>
+        </div>
+        <div class="card">
+          <h2 id="agentHeadline">확인 결과</h2>
+          <div id="agentAnswerText" class="agent-answer-text" style="display:none;"></div>
+          <ul id="agentBullets" class="agent-answer"></ul>
+          <div id="agentSuggestions" class="agent-samples" style="display:none;"></div>
+          <div id="agentLearned" class="rb-hint" style="display:none;"><span id="agentLearnedText"></span> <button type="button" id="agentLearnedUndo" class="agent-clear" style="display:inline;">취소</button></div>
+          <div id="agentTeach" style="display:none;">
+            <p id="agentTeachText" class="rb-hint"></p>
+            <div id="agentTeachChoices" class="agent-samples"></div>
+            <p class="rb-hint">고른 질문 종류는 이 컴퓨터에 저장되어 같은 문장을 다음에 정확히 처리합니다(비용 없음). <button type="button" id="agentTeachClearBtn" class="agent-clear" style="display:inline;">가르친 내용 모두 지우기</button> <span id="agentTeachCount"></span></p>
+          </div>
+          <div id="agentCharts"></div>
+          <div id="agentTables"></div>
+          <ul id="agentNotes" class="agent-answer"></ul>
+          <div id="agentLimitsWrap" class="agent-limits">
+            <strong>계산 한계</strong>
+            <ul id="agentLimits"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </main>
 
 <!-- 공용 도우미 → 화면별 스크립트 → app.js(로그인·첫 로딩) 순서로 로드 -->
 <script src="/static/js/common.js"></script>
 <script src="/static/js/portfolio.js"></script>
+<script src="/static/js/sectors.js"></script>
 <script src="/static/js/watch.js"></script>
 <script src="/static/js/strategy.js"></script>
 <script src="/static/js/report.js"></script>
 <script src="/static/js/tax.js"></script>
+<script src="/static/js/agent_charts.js"></script>
+<script src="/static/js/agent.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>

@@ -1,6 +1,8 @@
 """보유종목·예수금 계산, 현금 취급 종목, 리밸런싱 목표, 원/달러 비중."""
 from __future__ import annotations
 
+import math
+
 from common import SYMBOL_PATTERN, to_float
 from storage import UserStore
 from toss_api import get_cached_usd_jpy_quote
@@ -103,8 +105,9 @@ def validate_rebalance_targets(targets) -> tuple[list[dict], str | None]:
 
 def compute_rebalance(all_rows: list[dict], cash_krw_total: float, cash_symbols: set[str], total_eval: float,
                       config: dict) -> list[dict]:
-    """카테고리별 현재%/목표%. 카테고리에 없는 종목은 각각 개별 항목(목표% = default_rest_target_pct),
-    예수금과 현금 취급 종목은 "현금" 하나로 합친다."""
+    """카테고리별 현재%/목표%. 카테고리에 없는 종목은 각각 개별 항목(category=False, 목표%는 표시용으로
+    default_rest_target_pct), 예수금과 현금 취급 종목은 "현금" 하나로 합친다. category=False 항목은
+    리밸런싱 계획(compute_rebalance_plan)에서 제외된다."""
     def pct(amount: float) -> float:
         return amount / total_eval * 100 if total_eval else 0.0
 
@@ -113,15 +116,15 @@ def compute_rebalance(all_rows: list[dict], cash_krw_total: float, cash_symbols:
     for t in config["targets"]:
         amount = sum(r["평가금액(원)"] for r in all_rows if r["심볼"] in t["symbols"])
         matched.update(t["symbols"])
-        result.append({"label": t["label"], "current_pct": pct(amount), "target_pct": t["target_pct"]})
+        result.append({"label": t["label"], "current_pct": pct(amount), "target_pct": t["target_pct"], "category": True})
 
     default_pct = config["default_rest_target_pct"]
     for r in all_rows:
         if r["심볼"] not in matched:
             label = REBALANCE_CASH_LABEL if r["심볼"] in cash_symbols else r["종목"]
-            result.append({"label": label, "current_pct": pct(r["평가금액(원)"]), "target_pct": default_pct})
+            result.append({"label": label, "current_pct": pct(r["평가금액(원)"]), "target_pct": default_pct, "category": False})
     if cash_krw_total > 0:
-        result.append({"label": REBALANCE_CASH_LABEL, "current_pct": pct(cash_krw_total), "target_pct": default_pct})
+        result.append({"label": REBALANCE_CASH_LABEL, "current_pct": pct(cash_krw_total), "target_pct": default_pct, "category": False})
 
     merged: dict[str, dict] = {}
     for r in result:
@@ -130,6 +133,169 @@ def compute_rebalance(all_rows: list[dict], cash_krw_total: float, cash_symbols:
         else:
             merged[r["label"]] = dict(r)
     return list(merged.values())
+
+
+def compute_rebalance_plan(rebalance: list[dict], total_eval: float) -> dict:
+    """목표를 설정한 카테고리의 매수·매도 금액. 카테고리에 안 묶인 보유종목과 현금(category=False)은 계산에서
+    빼고 `excluded`로 현재 규모만 알려준다 — 정리할 종목이나 현금까지 목표에 끼워 넣으면 합계가 100%를 넘기 때문이다.
+    목표 금액은 제외 항목까지 포함한 총자산(total_eval) 기준이라, 카테고리가 총자산의 100%를 목표로 하면
+    매수가 매도보다 큰 만큼(자금 차이)을 제외 항목의 정리나 예수금으로 채워야 한다.
+    카테고리에 종목이 여러 개면 내부 배분 기준이 없으므로 카테고리 합계 금액까지만 계산한다. 주문은 만들지 않는다.
+    """
+    rows, excluded_holdings, excluded_cash = [], [], []
+    for item in rebalance:
+        if item.get("category", True) is False:  # category 표시가 없는 항목은 계산 대상으로 본다
+            (excluded_cash if item.get("label") == REBALANCE_CASH_LABEL else excluded_holdings).append(item)
+            continue
+        current_pct = to_float(item.get("current_pct"))
+        target_pct = to_float(item.get("target_pct"))
+        current_krw = total_eval * current_pct / 100
+        target_krw = total_eval * target_pct / 100
+        difference_krw = target_krw - current_krw
+        rows.append({
+            "label": str(item.get("label") or ""),
+            "current_pct": current_pct,
+            "target_pct": target_pct,
+            "current_krw": current_krw,
+            "target_krw": target_krw,
+            "difference_krw": difference_krw,
+            "action": "buy" if difference_krw > 0.5 else ("sell" if difference_krw < -0.5 else "hold"),
+        })
+    rows.sort(key=lambda r: abs(r["difference_krw"]), reverse=True)
+    target_total_pct = sum(r["target_pct"] for r in rows)
+    buy_total = sum(max(0.0, r["difference_krw"]) for r in rows)
+    sell_total = sum(max(0.0, -r["difference_krw"]) for r in rows)
+    ready = bool(rows) and abs(target_total_pct - 100.0) <= 0.01
+
+    holdings_pct = sum(to_float(i.get("current_pct")) for i in excluded_holdings)
+    cash_pct = sum(to_float(i.get("current_pct")) for i in excluded_cash)
+    excluded = {
+        "holdings_count": len(excluded_holdings),
+        "holdings_pct": holdings_pct,
+        "holdings_krw": total_eval * holdings_pct / 100,
+        "cash_pct": cash_pct,
+        "cash_krw": total_eval * cash_pct / 100,
+    }
+
+    warnings = []
+    if not rows:
+        warnings.append("목표를 설정한 카테고리가 없어 계산할 수 없습니다. 리밸런싱 목표 설정에서 카테고리를 만들어 주세요.")
+    elif not ready:
+        warnings.append(f"카테고리 목표 비중 합계가 {target_total_pct:g}%입니다. 100%로 맞춰야 매수·매도가 균형을 이룹니다.")
+    if excluded["holdings_count"] or excluded["cash_pct"] > 0:
+        parts = []
+        if excluded["holdings_count"]:
+            parts.append(f"목표를 설정하지 않은 보유종목 {excluded['holdings_count']}개(현재 {holdings_pct:.1f}%)")
+        if excluded["cash_pct"] > 0:
+            parts.append(f"현금(현재 {cash_pct:.1f}%)")
+        particle = "은" if excluded["cash_pct"] > 0 else "는"  # "…현금(…)은" / "…보유종목 N개(…)는"
+        warnings.append("와 ".join(parts) + f"{particle} 계산에서 제외했습니다. 목표 금액은 이 항목을 포함한 총자산 기준입니다.")
+    warnings += [
+        "카테고리에 여러 종목이 있으면 카테고리 합계 금액만 계산하며 내부 종목별 배분은 계산하지 않습니다.",
+        "수수료·세금·최소 주문 수량·주가 변동을 반영하지 않은 금액 기준 계획이며 실제 주문을 실행하지 않습니다.",
+    ]
+    return {
+        "ready": ready,
+        "target_total_pct": target_total_pct,
+        "buy_total_krw": buy_total,
+        "sell_total_krw": sell_total,
+        "funding_gap_krw": buy_total - sell_total,
+        "excluded": excluded,
+        "rows": rows,
+        "warnings": warnings,
+    }
+
+
+def _moves(plan_rows: list[dict]) -> list[dict]:
+    return [r for r in plan_rows if r.get("action") in ("buy", "sell")]
+
+
+def _held_in(symbols: list[str], held_rows: list[dict]) -> list[dict]:
+    by_symbol = {r["심볼"]: r for r in held_rows}
+    return [by_symbol[s] for s in symbols
+            if s in by_symbol and by_symbol[s]["평가금액(원)"] > 0 and by_symbol[s]["수량"] > 0]
+
+
+def symbols_needing_quotes(plan_rows: list[dict], categories: list[dict], held_rows: list[dict]) -> list[str]:
+    """주수를 계산하려면 현재가를 따로 받아야 하는 종목: 매수해야 하는데 카테고리에 보유 종목이 하나도 없어
+    설정의 첫 번째 종목으로 사야 하는 경우. 보유 종목은 평가금액/수량으로 단가를 알 수 있다."""
+    symbols_of = {c["label"]: c["symbols"] for c in categories}
+    need = []
+    for row in _moves(plan_rows):
+        syms = symbols_of.get(row["label"], [])
+        if row["action"] == "buy" and syms and not _held_in(syms, held_rows) and syms[0] not in need:
+            need.append(syms[0])
+    return need
+
+
+def _shares(amount_krw: float, price_krw: float | None, currency: str | None) -> float | None:
+    """금액 → 주수(내림). 국내(KRW) 종목은 정수 주, 해외는 소수 둘째 자리."""
+    if not price_krw or price_krw <= 0 or not currency:
+        return None
+    raw = amount_krw / price_krw
+    return float(math.floor(raw)) if currency == "KRW" else math.floor(raw * 100 + 1e-9) / 100
+
+
+def allocate_trade_shares(plan_rows: list[dict], categories: list[dict], held_rows: list[dict], quotes: dict) -> dict:
+    """카테고리별 매수·매도 금액을 종목별 금액과 주수로 나눈다.
+    - 보유 종목이 있으면 보유 평가금액 비율대로 나눈다(매도는 항상 보유 종목에서).
+    - 매수인데 보유 종목이 없으면 설정에 적은 첫 번째 종목에 전액(quotes에서 단가를 가져온다).
+    카테고리 안에서 종목 목표 비중을 따로 정하지 않았으므로 이 규칙은 단순 배분이다 — 인버스처럼 같이 사면 안 되는 종목이
+    보유 중이면 그 종목에도 배분된다.
+    반환: {"allocations": {라벨: [{symbol, name, amount_krw, price_krw, currency, shares}]}, "missing": [단가를 모르는 종목]}"""
+    symbols_of = {c["label"]: c["symbols"] for c in categories}
+    allocations: dict[str, list[dict]] = {}
+    missing: list[str] = []
+    for row in _moves(plan_rows):
+        amount = abs(row["difference_krw"])
+        syms = symbols_of.get(row["label"], [])
+        held = _held_in(syms, held_rows)
+        parts = []
+        if held:
+            total = sum(h["평가금액(원)"] for h in held)
+            for h in held:
+                parts.append({"symbol": h["심볼"], "name": h["종목"], "amount_krw": amount * h["평가금액(원)"] / total,
+                              "price_krw": h["평가금액(원)"] / h["수량"], "currency": h["통화"]})
+        elif row["action"] == "buy" and syms:
+            quote = quotes.get(syms[0]) or {}
+            parts.append({"symbol": syms[0], "name": quote.get("name", syms[0]), "amount_krw": amount,
+                          "price_krw": quote.get("price_krw"), "currency": quote.get("currency")})
+        for part in parts:
+            part["shares"] = _shares(part["amount_krw"], part["price_krw"], part["currency"])
+            if part["shares"] is None and part["symbol"] not in missing:
+                missing.append(part["symbol"])
+        allocations[row["label"]] = parts
+    return {"allocations": allocations, "missing": missing}
+
+
+def apply_entry_scaling(plan_rows: list[dict], signals: dict) -> dict:
+    """매수 행의 종목별 금액(allocations)에 주봉 MA 전략의 진입 비율을 곱해 "지금 살 금액"과 "대기 금액"을 붙인다.
+    signals[종목] = {"status": "ok"|"excluded"|"none"|"unavailable", "entry_pct": …}. status가 ok일 때만 줄이고,
+    전략에서 뺀 종목(excluded)·배정 없음(none)·신호 계산 실패(unavailable)는 금액을 그대로 둔다.
+    단순화: 카테고리 매수액을 종목별로 나눈 뒤 진입 비율을 곱한 값이며, 전략 화면의 '목표 × 진입 비율 − 현재 보유분'
+    계산과는 다르다. 매도 행은 건드리지 않는다. 반환: 지금 매수·대기 합계와 줄인 항목이 있는지."""
+    now_total = wait_total = 0.0
+    scaled = False
+    for row in plan_rows:
+        if row.get("action") != "buy" or not row.get("allocations"):
+            continue
+        for part in row["allocations"]:
+            sig = signals.get(part["symbol"]) or {}
+            if sig.get("status") == "ok":
+                entry = min(100.0, max(0.0, to_float(sig.get("entry_pct"))))
+                part["entry_pct"] = entry
+                part["buy_now_krw"] = part["amount_krw"] * entry / 100
+                part["wait_krw"] = part["amount_krw"] - part["buy_now_krw"]
+                scaled = True
+            else:
+                part["buy_now_krw"], part["wait_krw"] = part["amount_krw"], 0.0
+            part["signal_status"] = sig.get("status") or "none"
+            part["shares_now"] = _shares(part["buy_now_krw"], part.get("price_krw"), part.get("currency"))
+        row["buy_now_krw"] = sum(p["buy_now_krw"] for p in row["allocations"])
+        row["wait_krw"] = sum(p["wait_krw"] for p in row["allocations"])
+        now_total += row["buy_now_krw"]
+        wait_total += row["wait_krw"]
+    return {"scaled": scaled, "buy_now_total_krw": now_total, "wait_total_krw": wait_total}
 
 
 def compute_currency_split(all_rows: list[dict], cash_krw_amt: float, cash_usd_amt: float, usd_krw: float,
@@ -195,6 +361,7 @@ def build_holdings(snapshot: dict, store: UserStore) -> dict:
     total_cost = total_eval - total_pl
 
     config = load_rebalance_config(store)
+    rebalance = compute_rebalance(rows, cash_krw_total, cash_symbols, total_eval, config)
     return {
         "stocks": stock_rows,
         "cash": {
@@ -209,7 +376,9 @@ def build_holdings(snapshot: dict, store: UserStore) -> dict:
             "profit_loss_krw": total_pl,
             "rate_pct": (total_pl / total_cost * 100) if total_cost else 0.0,
         },
-        "rebalance": compute_rebalance(rows, cash_krw_total, cash_symbols, total_eval, config),
+        "rebalance": rebalance,
+        "rebalance_categories": [{"label": c["label"], "symbols": list(c["symbols"])} for c in config["targets"]],
+        "rebalance_plan": compute_rebalance_plan(rebalance, total_eval),
         "currency_split": compute_currency_split(rows, cash_krw_amt, cash_usd_amt, usd_krw, total_eval, config["krw_target_pct"]),
         "usd_krw": usd_krw,
         "usd_jpy": get_cached_usd_jpy_quote(),

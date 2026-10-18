@@ -194,23 +194,24 @@ _weekly_report_cache: dict[str, dict] = {}
 _weekly_report_cache_lock = threading.Lock()
 
 
-def get_yahoo_daily_history(symbol: str, force: bool = False) -> dict:
+def get_yahoo_daily_history(symbol: str, force: bool = False, years: int | None = None) -> dict:
     """Yahoo 일봉 {bars: [(date, close, adjclose)], divs: [(date, amount)], name}.
 
     날짜는 거래소 현지 기준(gmtoffset 반영) — 안 그러면 KRW=X처럼 UTC 전날 23시에 찍히는 종목이
     하루씩 밀려서 주봉 묶음이 틀어진다.
     """
     now = time.time()
+    cache_key = symbol if years is None else f"{symbol}|{years}"  # years: 과거 통계처럼 더 긴 기간이 필요할 때(기본은 YAHOO_HISTORY_YEARS)
     if not force:
         with _yahoo_history_lock:
-            cached = _yahoo_history_cache.get(symbol)
+            cached = _yahoo_history_cache.get(cache_key)
             if cached and now - cached["ts"] < YAHOO_HISTORY_CACHE_TTL:
                 return cached["data"]
 
     resp = requests.get(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}",
         # range=max는 월봉으로 내려오므로 period1/period2로 일봉을 받는다.
-        params={"period1": int(now - YAHOO_HISTORY_YEARS * 366 * 86400), "period2": int(now),
+        params={"period1": int(now - (years or YAHOO_HISTORY_YEARS) * 366 * 86400), "period2": int(now),
                 "interval": "1d", "events": "div"},
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=15,
@@ -242,7 +243,7 @@ def get_yahoo_daily_history(symbol: str, force: bool = False) -> dict:
     ]
     data = {"bars": bars, "divs": divs, "name": meta.get("longName") or meta.get("shortName") or symbol}
     with _yahoo_history_lock:
-        _yahoo_history_cache[symbol] = {"ts": now, "data": data}
+        _yahoo_history_cache[cache_key] = {"ts": now, "data": data}
     return data
 
 
