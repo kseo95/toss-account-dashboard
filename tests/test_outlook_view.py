@@ -281,11 +281,12 @@ class OutlookHttpTest(storage_http.HttpTestBase, unittest.TestCase):
         self.prepare()
         _, alone, _ = self.ask(cookie, "NVDA 어때?")
         self.assertEqual(alone["executions"], [])
-        self.assertIn("NVDA은(는) 보유·관심종목에 없어 볼 수 없습니다", alone["answer"]["bullets"][0])
+        self.assertEqual(alone["answer"]["unknown_kind"], "not_found")                                  # 검색으로도 못 찾으면 못 찾았다고(보유 종목 종합으로 새지 않는다)
+        self.assertIn("'NVDA'을(를) 종목으로 찾지 못했습니다", alone["answer"]["bullets"][0])
         self.assertTrue(alone["answer"]["suggestions"])
         _, mixed, _ = self.ask(cookie, "GLDM이랑 NVDA 뉴스")
         self.assertEqual([r[0] for r in mixed["answer"]["tables"][0]["rows"]], ["GLDM"])
-        self.assertTrue(any("NVDA은(는) 보유·관심종목에 없어 볼 수 없습니다" in n for n in mixed["answer"]["notes"]))
+        self.assertTrue(any("NVDA을(를) 종목으로 찾지 못했습니다" in n for n in mixed["answer"]["notes"]))
         _, general, _ = self.ask(cookie, "ETF 뉴스 알려줘")                                # ETF 같은 약어는 종목 코드로 보지 않는다
         self.assertFalse(any("보유·관심종목에 없어" in n for n in general["answer"]["notes"]))
 
@@ -295,10 +296,12 @@ class OutlookHttpTest(storage_http.HttpTestBase, unittest.TestCase):
         status, payload, _ = self.ask(cookie, "안녕 오늘 점심 뭐 먹지")
         self.assertEqual(status, 200)
         self.assertEqual(payload["executions"], [])
-        self.assertTrue(any("이렇게 물어보세요" in b for b in payload["answer"]["bullets"]))
+        self.assertEqual(payload["answer"]["unknown_kind"], "unclear")
+        self.assertEqual(payload["answer"]["headline"], "아직 답할 수 없는 질문입니다")                      # 못 알아들었다고 말하고 지금 가능한 것을 정리
+        self.assertTrue(any("지금 가능한 것은 이렇습니다" in b for b in payload["answer"]["bullets"]))
         suggestions = payload["answer"]["suggestions"]                                      # 내 종목 이름이 들어간 질문 예시
         self.assertIn("이번 주 무엇을 확인해야 해?", suggestions)
-        self.assertTrue(any("GLDM" in s for s in suggestions))
+        self.assertTrue(any(s.startswith("TLT") for s in suggestions))                       # 내 첫 종목 이름으로 만든 예시
         self.assertLessEqual(len(suggestions), 6)
         _, other, _ = self.ask(cookie, "금리 이야기 좀")   # '금리' 속 '금'은 카테고리로 잡지 않는다
         self.assertNotIn("get_outlook", [e["tool"] for e in other["executions"]])

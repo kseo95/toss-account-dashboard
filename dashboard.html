@@ -501,6 +501,13 @@
             <span id="agentMissCount" class="rb-hint"></span>
           </div>
           <pre id="agentMissList" class="rb-hint" style="display:none;white-space:pre-wrap;"></pre>
+          <p class="rb-hint">"기능이 아직 없습니다"라는 답에서 <b>이 기능 요청하기</b>를 누르면 주제별로 횟수가 쌓입니다(이 컴퓨터에만 저장). 다음에 기능을 만들 때 많이 요청된 것부터 만듭니다.</p>
+          <div class="rb-actions">
+            <button type="button" id="agentRequestViewBtn">기능 요청 보기</button>
+            <button type="button" id="agentRequestClearBtn">요청 지우기</button>
+            <span id="agentRequestCount" class="rb-hint"></span>
+          </div>
+          <pre id="agentRequestList" class="rb-hint" style="display:none;white-space:pre-wrap;"></pre>
         </details>
       </div>
       <div class="card">
@@ -527,6 +534,7 @@
           <div id="agentAnswerText" class="agent-answer-text" style="display:none;"></div>
           <ul id="agentBullets" class="agent-answer"></ul>
           <div id="agentSuggestions" class="agent-samples" style="display:none;"></div>
+          <div id="agentRequest" class="rb-hint" style="display:none;"><button type="button" id="agentRequestBtn" class="agent-clear" style="display:inline;"></button> <span id="agentRequestText"></span></div>
           <div id="agentLearned" class="rb-hint" style="display:none;"><span id="agentLearnedText"></span> <button type="button" id="agentLearnedUndo" class="agent-clear" style="display:inline;">취소</button></div>
           <div id="agentTeach" style="display:none;">
             <p id="agentTeachText" class="rb-hint"></p>

@@ -30,7 +30,7 @@ def _color(token, default: str = "neutral") -> str:
 
 
 def make(kind: str, title: str, labels: list, datasets: list[dict], unit: str = "", subtitle: str = "", caption: str = "", markers: list | None = None,
-         hlines: list | None = None, height: int | None = None, decimals: int | None = None, signed: bool | None = None) -> dict | None:
+         hlines: list | None = None, height: int | None = None, decimals: int | None = None, signed: bool | None = None, ymin: float | None = None, ymax: float | None = None) -> dict | None:
     """명세를 만들고 검증한다. 점이 없거나 종류가 틀리면 None(그래프를 그리지 않는다)."""
     if kind not in TYPES or not labels:
         return None
@@ -58,6 +58,9 @@ def make(kind: str, title: str, labels: list, datasets: list[dict], unit: str = 
         spec["caption"] = _text(caption, 200)
     if height:
         spec["height"] = max(120, min(int(height), 560))
+    for key, value in (("ymin", ymin), ("ymax", ymax)):        # 값 축의 고정 범위(RSI는 0~100처럼 기준선이 항상 보이게)
+        if _number(value) is not None:
+            spec[key] = _number(value)
     if isinstance(signed, bool):
         spec["signed"] = signed                # 가격처럼 + 기호를 붙이면 안 되는 그래프는 False
     if isinstance(decimals, int) and not isinstance(decimals, bool) and 0 <= decimals <= 3:

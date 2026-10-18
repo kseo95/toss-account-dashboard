@@ -90,7 +90,7 @@ function agentChartConfig(spec) {
   const multi = datasets.length > 1;
   const hasLongText = (spec.datasets || []).some(d => (d.text || []).some(t => String(t).length > 14));
   const scaleStyle = { ticks: { color: AGENT_CHART_MUTED, font: { size: 11 } }, grid: { color: AGENT_CHART_GRID } };
-  const valueScale = { ...scaleStyle, ticks: { ...scaleStyle.ticks, callback: v => agentChartFormat(v, unit, signed, true, decimals) }, grace: isLine ? '5%' : '18%' };
+  const valueScale = { ...scaleStyle, ticks: { ...scaleStyle.ticks, callback: v => agentChartFormat(v, unit, signed, true, decimals) }, grace: isLine ? '5%' : '18%', ...(typeof spec.ymin === 'number' ? { min: spec.ymin } : {}), ...(typeof spec.ymax === 'number' ? { max: spec.ymax } : {}) };
   const categoryScale = { ...scaleStyle, grid: { display: false }, ticks: { ...scaleStyle.ticks, autoSkip: true, maxTicksLimit: isLine ? 8 : 40, maxRotation: 0 } };
   return {
     type: isLine ? 'line' : 'bar',
