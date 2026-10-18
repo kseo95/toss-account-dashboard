@@ -50,6 +50,7 @@ from indicators import INDICATORS, analyze as analyze_indicators
 from fundamentals import (INFO_CACHE_TTL, assess_etf, assess_stock, fetch_info as fetch_fundamentals, is_korean as is_korean_stock, peer_stats, sample_peers)
 from response import (DEFAULT_ASSETS as DEFAULT_RESPONSE_ASSETS, DEFAULT_HORIZON as DEFAULT_RESPONSE_HORIZON, HORIZONS as RESPONSE_HORIZONS, MAX_ASSETS as MAX_RESPONSE_ASSETS,
                       analyze as analyze_response, resolve_asset, resolve_factor)
+import local_model
 from unknown_policy import NO_FEATURE as NO_FEATURE_TOPICS, match_limit, respond as respond_unknown
 from symbols import candidate_tokens, choose as choose_symbol
 from drawdown import RISK_SYMBOLS, day_movers, search_term, worst_days
@@ -688,6 +689,7 @@ def get_agent_config(req: Request):
     return {
         "configured": bool(req.session.get("anthropic_api_key")),
         "model": req.session.get("agent_model", DEFAULT_AGENT_MODEL),
+        "local": local_state(req.store),
         **fred_status(req.session),
     }
 
@@ -830,6 +832,57 @@ def macro_drivers_view(req: Request, args: dict | None = None) -> dict:
                       "drivers": result.get("contributions", []), "residual_pct": result.get("residual_pct")})
     items.sort(key=lambda x: (x["weekly_change_pct"] is None, -abs(x["weekly_change_pct"] or 0), not x["held"]))
     return {"factors": weekly_factor_moves(factor_series), "items": items, "omitted": omitted, "focus": focus, "focused": focused}
+
+
+RULES_BAND_PCT = 3.0            # 목표 비중과 이만큼(%p) 안으로 가까우면 '목표 근처'
+_MA_LABEL = re.compile(r"MA(\d+)([주일])\s*([+-]?\d+(?:\.\d+)?)%")
+
+
+def my_rules_view(req: Request, args: dict | None = None) -> dict:
+    """내가 정해 둔 기준(리밸런싱 목표 비중, 분할매수 전략)과 현재 보유를 대조한 숫자. 읽기 전용이며 판단하지 않는다(어느 기준에 해당하는지까지만).
+    카테고리별 목표 비중 대비 현재 비중(목표 대상 안 기준), 종목별 전략 단계·진입 비율·주봉 이동평균 대비 위치, 목표가 없는 종목."""
+    holdings = get_holdings_view(req)
+    stocks = holdings.get("stocks", [])
+    total = holdings["totals"]["eval_krw"] or 0.0
+    config = load_rebalance_config(req.store)
+    value = {r["심볼"]: r["평가금액(원)"] or 0.0 for r in stocks}
+    by_symbol = {r["심볼"]: r for r in stocks}
+    category_of = {}
+    targets = []
+    universe = 0.0
+    for t in config["targets"]:
+        members = [sym for sym in t["symbols"] if sym in value]
+        for sym in t["symbols"]:
+            category_of.setdefault(sym, t["label"])
+        amount = sum(value[sym] for sym in members)
+        universe += amount
+        targets.append({"label": t["label"], "symbols": list(t["symbols"]), "held_symbols": members, "target_pct": t["target_pct"], "value_krw": amount})
+    for t in targets:
+        t["actual_pct"] = t["value_krw"] / universe * 100 if universe else 0.0                 # 목표 대상(카테고리에 넣은 보유종목) 안에서의 비중
+        t["actual_total_pct"] = t["value_krw"] / total * 100 if total else 0.0                 # 예수금·현금까지 포함한 전체 대비 비중
+        t["diff_pct"] = t["actual_pct"] - (t["target_pct"] or 0.0)
+        t["status"] = "over" if t["diff_pct"] > RULES_BAND_PCT else "under" if t["diff_pct"] < -RULES_BAND_PCT else "near"
+    held = set(value)
+    signals = strategy_signals_for(req.session, req.store, held, sorted(held)) if held else {}
+    data = load_strategy_templates(req.store)
+    template = (data.get("templates") or {}).get(data.get("default_template") or "") or {}
+    steps = [f"MA{st['params']['period']}{'주' if st['params']['interval'] == 'week' else '일'} 아래 +{st.get('buy_pct', 0):g}%p" for st in template.get("steps", []) if st.get("indicator") == "MA"]
+    rows = []
+    for sym in sorted(held, key=lambda x: -value[x]):
+        r, sig = by_symbol[sym], signals.get(sym, {})
+        entry = {"status": sig.get("status", "none")}
+        if sig.get("status") == "ok":
+            ma = []
+            for step in sig.get("steps", []):
+                m = _MA_LABEL.search(step.get("label") or "")
+                if m:
+                    ma.append({"period": int(m.group(1)), "unit": m.group(2), "dist_pct": float(m.group(3))})
+            entry.update({"entry_pct": sig.get("entry_pct"), "stage": sig.get("stage_count"), "stage_total": sig.get("stage_total"), "recovered": bool(sig.get("recovered")), "ma": ma})
+        rows.append({"symbol": sym, "name": r["종목"], "weight_pct": r.get("지분율(%)"), "value_krw": value[sym], "return_pct": r.get("수익률(%)"),
+                     "category": category_of.get(sym), "strategy": entry})
+    return {"targets": targets, "universe_krw": universe, "total_krw": total, "holdings": rows,
+            "unclassified": [x["symbol"] for x in rows if not x["category"]], "strategy_steps": steps,
+            "recovery_pct": template.get("recovery_pct"), "band_pct": RULES_BAND_PCT}
 
 
 INDICATOR_YEARS = 3            # 200일 이동평균 교차까지 계산하려고 받는 시세 기간
@@ -1569,6 +1622,8 @@ def execute_agent_tool(req: Request, name: str, args: dict | None = None) -> dic
         payload = ma_screen_view(req, args if isinstance(args, dict) else None)
     elif name == "get_sector_trends":
         payload = trend_view(req, args if isinstance(args, dict) else None)
+    elif name == "get_my_rules":
+        payload = my_rules_view(req, args if isinstance(args, dict) else None)
     elif name == "get_indicators":
         payload = indicators_view(req, args if isinstance(args, dict) else None)
     elif name == "get_valuation":
@@ -1775,6 +1830,114 @@ def post_feature_requests(req: Request):
     return {"ok": True, **record_feature_request(req.store, topic, str(req.body.get("question") or ""))}
 
 
+# 로컬 모델(Ollama) 설정: 사용자가 끌 수 있다(기본은 켜짐, 모델이 준비돼 있을 때만 쓴다). API 요금이 없고 이 컴퓨터 안에서만 통신한다.
+LOCAL_SETTINGS_FILE = "agent_local.json"
+
+
+def local_enabled(store: UserStore) -> bool:
+    data = store.read_json(LOCAL_SETTINGS_FILE)
+    return bool(data.get("enabled", True)) if isinstance(data, dict) else True
+
+
+def local_state(store: UserStore) -> dict:
+    st = local_model.status()
+    return {"enabled": local_enabled(store), "reachable": st["reachable"], "ready": st["ready"], "model": st["model"]}
+
+
+LOCAL_MAX_TOOLS = 5            # 한 질문에서 로컬 모델이 부를 수 있는 도구 총수
+
+
+def try_local_plan(req: Request, question: str, history: list[dict]) -> dict | None:
+    """로컬 모델이 도구 호출 계획을 세운다. 꺼져 있거나 모델이 없거나 실패하거나 도구를 못 골랐으면 None(규칙 기반 처리로 되돌아간다).
+    반환: {"calls": [...], "messages": 이어서 쓸 대화, "assistant": 모델 응답}."""
+    state = local_state(req.store)
+    if not (state["enabled"] and state["ready"]):
+        return None
+    try:
+        got = local_model.plan(question, history, state["model"])
+    except (requests.RequestException, ValueError, KeyError):
+        local_model.reset_status_cache()
+        return None
+    return got if got["calls"] else None
+
+
+def tool_digest(name: str, result: dict) -> str:
+    """도구 결과를 모델이 읽을 한국어 요약 글로: 답변 조립 코드가 만든 요약 줄·그래프 제목·부제·표 제목(숫자는 도구가 계산한 값 그대로)."""
+    answer = compose_agent_answer({name: result})
+    lines = [str(b) for b in answer.get("bullets", []) if str(b).strip()]
+    for c in answer.get("charts", [])[:4]:
+        lines.append(" ".join(x for x in (c.get("title"), c.get("subtitle")) if x))
+        for d in c.get("datasets", [])[:2]:
+            texts = d.get("text") or []
+            if texts:
+                lines.append(" / ".join(f"{label}: {text}".replace("\n", " ") for label, text in zip(c.get("labels", []), texts)))
+    for t in answer.get("tables", [])[:2]:
+        lines.append(str(t.get("title") or ""))
+    for n in answer.get("notes", [])[:2]:
+        lines.append(str(n))
+    return "\n".join(lines)[:1200]
+
+
+def local_follow_up(req: Request, question: str, plan: dict, calls: list[dict], results: dict, run) -> str | None:
+    """도구 결과를 모델에게 보여 주고 더 부를 도구가 있으면 실행하는 것을 최대 LOCAL_MAX_ROUNDS번 되풀이한 뒤 모델의 최종 답을 돌려준다(없으면 None).
+    run(name, args, reason)은 도구를 실행해 results에 넣는다. 실패하면 그때까지의 결과로 끝낸다."""
+    state = local_state(req.store)
+    messages = plan["messages"]
+    final = None
+    for round_no in range(local_model.MAX_ROUNDS + 1):
+        digests = {c["name"]: tool_digest(c["name"], results[c["name"]]) for c in calls if c["name"] in results}
+        try:
+            step = local_model.observe(messages, calls, digests, question, state["model"])
+        except (requests.RequestException, ValueError, KeyError):
+            local_model.reset_status_cache()
+            return None
+        if step["final"]:
+            facts = "\n".join(tool_digest(n, r) for n, r in results.items())
+            final = local_model.usable_final(step["final"], facts)
+            break
+        new = [c for c in step["calls"] if c["name"] not in results][:max(0, LOCAL_MAX_TOOLS - len(results))]
+        if not new or round_no >= local_model.MAX_ROUNDS:
+            break
+        for c in new:
+            try:
+                run(c["name"], c["args"], "로컬 모델이 결과를 보고 추가로 선택")
+            except (ApiError, ValueError):
+                pass
+        calls = [c for c in new if c["name"] in results]
+        if not calls:
+            break
+    return final
+
+
+def local_summary(req: Request, question: str, answer: dict) -> str | None:
+    """도구가 만든 답변 글(요약 줄·그래프 제목·부제)을 근거로 로컬 모델이 질문에 직접 답하는 한두 문장을 쓴다. 근거에 없는 숫자가 있으면 버린다."""
+    facts = [str(b) for b in answer.get("bullets", []) if str(b).strip()]
+    for c in answer.get("charts", [])[:4]:
+        facts.append(" ".join(x for x in (c.get("title"), c.get("subtitle")) if x))
+    for t in answer.get("tables", [])[:2]:
+        facts.append(str(t.get("title") or ""))
+    if not facts:
+        return None
+    try:
+        return local_model.summarize(question, "\n".join(facts), local_state(req.store)["model"])
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+
+
+@route("GET", "/api/agent/local")
+def get_agent_local(req: Request):
+    return local_state(req.store)
+
+
+@route("POST", "/api/agent/local")
+def post_agent_local(req: Request):
+    """로컬 모델 사용 켜기/끄기({enabled})."""
+    enabled = bool(req.body.get("enabled"))
+    req.store.write_json(LOCAL_SETTINGS_FILE, {"enabled": enabled})
+    local_model.reset_status_cache()
+    return {"ok": True, **local_state(req.store)}
+
+
 @route("POST", "/api/agent/query", max_body=65536)  # 대화 문맥(최근 8개 × 2,000자, 한글은 글자당 3바이트)이 기본 8KB를 넘는다
 def post_agent_query(req: Request):
     """API 키가 있으면 LLM 도구 호출, 없으면 규칙 기반 대체 경로로 질문을 처리한다."""
@@ -1794,19 +1957,26 @@ def post_agent_query(req: Request):
         except AgentApiError as e:
             raise ApiError(502, str(e))
     matcher, taught = intent_matcher_for(req.store)
-    via, understood = None, None
+    via, understood, local_args = None, None, {}
+    limit = match_limit(question)                    # 도구가 없다고 아는 주제(배당 내역·RSI·목표주가…)나 주문 요청
     if taught.get(normalize_question(question)):    # 사용자가 가르친 문장은 키워드보다 먼저(가르친 대로 처리)
         via, plan = "taught", plan_for_intent(taught[normalize_question(question)])
+    elif limit and limit.get("exclusive"):           # 주문 요청·내 매매 습관 평가는 어떤 도구(규칙·로컬 모델)로도 대신 답하지 않는다 — 안 된다고 알린다
+        plan = {"supported": False, "intents": [], "tools": []}
     else:
         try:
             plan = plan_agent_query(question)
         except ValueError as e:
             raise ApiError(400, str(e))
+        local_plan = try_local_plan(req, question, normalize_history(req.body.get("history"))) if question else None   # 로컬 모델(Ollama)이 준비돼 있으면 모델이 도구를 고른다
+        if local_plan:
+            calls = local_plan["calls"]
+            via, plan = "local", {"supported": True, "intents": ["local"], "tools": [c["name"] for c in calls]}
+            local_args = {c["name"]: c["args"] for c in calls}
     pending = req.session.pop("intent_pending", None)    # 바로 앞에서 처리 못 했거나 짐작만 했던 질문(한 번만 쓰고 지운다)
     learned_now = None
     if via is None and plan["supported"] and pending and time.time() - pending["ts"] <= AUTO_LEARN_WINDOW:
         learned_now = learn_from_followup(req.store, matcher, pending["question"], question, plan)
-    limit = match_limit(question)                    # 도구가 없다고 아는 주제(배당 내역·RSI·목표주가…)나 주문 요청
     info = focus_info(req, question) if (not plan["supported"] or FOCUS_TOOLS & set(plan["tools"])) else {"found": False, "names": [], "unknown": [], "extra_names": []}
     if not plan["supported"] and info["found"] and not limit:   # 키워드는 없지만 내 종목·카테고리를 가리키면 그 종목의 움직임·요인·보도·앞으로의 뷰를 한꺼번에 보여 준다
         plan = plan_for_holding()
@@ -1822,7 +1992,7 @@ def post_agent_query(req: Request):
         results[name] = output["result"]
         executions.append({"tool": name, "description": definitions[name]["description"], **({"reason": reason} if reason else {})})
     for name in plan["tools"]:
-        run_tool(name, (parse_screen_query(question) if name == "get_ma_screen" else parse_trend_query(question) if name == "get_sector_trends"
+        run_tool(name, local_args[name] if name in local_args else (parse_screen_query(question) if name == "get_ma_screen" else parse_trend_query(question) if name == "get_sector_trends"
                         else parse_response_query(question) if name == "get_factor_response"
                         else parse_indicator_query(question) if name == "get_indicators"
                         else {"focus": question, "case": question} if name == "get_macro_cases" else {"focus": question}) if (name in FOCUS_TOOLS or name in ("get_ma_screen", "get_sector_trends", "get_factor_response", "get_indicators")) else None)  # 규칙 기반 모드는 질문 문장에서 종목·사례·요인을 찾는다
@@ -1833,8 +2003,18 @@ def post_agent_query(req: Request):
                 run_tool(step["tool"], step["args"], step["reason"])
             except (ApiError, ValueError):
                 extra_failed.append(step["reason"])
+    local_final = None
+    if via == "local":                                            # 도구 결과를 모델이 보고 더 필요한 도구를 부르거나 최종 답을 쓴다(최대 2번 더)
+        def run_more(name, args, reason):
+            run_tool(name, args, reason)
+        local_final = local_follow_up(req, question, local_plan, local_plan["calls"], results, run_more)
     answer = compose_agent_answer(results)
     answer["bullets"].extend(observations(results))
+    if via == "local":
+        summary = local_final or local_summary(req, question, answer)    # 모델의 최종 답(없으면 두 문장 요약). 근거에 없는 숫자가 있으면 붙이지 않는다
+        if summary:
+            answer["bullets"].insert(0, "요약: " + summary)
+        answer["notes"].append(f"로컬 모델({local_state(req.store)['model']})이 질문을 이해해 도구를 골랐습니다. 숫자·표·그래프는 도구가 계산한 값입니다.")
     if extra_failed:
         answer["notes"].append("추가로 확인하려던 것을 가져오지 못했습니다: " + " / ".join(extra_failed))
     if plan["supported"] and info["unknown"]:
@@ -1863,7 +2043,7 @@ def post_agent_query(req: Request):
                            "understood": {"intent": understood["intent"], "label": INTENT_LABELS[understood["intent"]], "score": round(understood["score"], 2)} if understood else None,
                            "choices": [{"intent": k, "label": INTENT_LABELS[k]} for k in TEACHABLE_INTENTS]}
     return {
-        "mode": "rule_based_preview",
+        "mode": "local_model" if via == "local" else "rule_based_preview",
         "question": question,
         "plan": plan,
         "executions": executions,

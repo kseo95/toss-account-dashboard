@@ -493,6 +493,8 @@
         </details>
         <details class="settings">
           <summary>질문 이해하기 (학습)</summary>
+          <label style="flex-direction:row;align-items:center;gap:6px;"><input id="agentLocalEnable" type="checkbox"> 로컬 모델(Ollama)로 질문 이해하기 — <span id="agentLocalStatus" class="rb-hint">확인 중</span></label>
+          <p class="rb-hint">이 컴퓨터에서 도는 무료 모델이 질문에 맞는 도구를 골라 줍니다(API 요금 없음, 외부로 나가는 데이터 없음). 모델이 없거나 꺼져 있으면 규칙 기반으로 처리합니다.</p>
           <p class="rb-hint">못 알아들은 질문 뒤에 비슷한 뜻의 질문을 키워드로 다시 물으면 앞 질문을 그 뜻으로 자동 연결해 기억합니다(연결하면 답변 위에 알리고 취소할 수 있습니다). 아래를 켜면 처리하지 못했거나 짐작만 한 질문을 이 컴퓨터에만 기록해 두고, 나중에 예시 문장을 한 번에 보강하는 데 씁니다(기본은 꺼짐). 모두 비용이 들지 않습니다.</p>
           <label style="flex-direction:row;align-items:center;gap:6px;"><input id="agentMissEnable" type="checkbox"> 놓친 질문 기록하기 (이 컴퓨터에만 저장)</label>
           <div class="rb-actions">

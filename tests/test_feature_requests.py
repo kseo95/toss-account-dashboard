@@ -65,7 +65,8 @@ class FeatureRequestHttpTest(storage_http.HttpTestBase, unittest.TestCase):
             server.record_feature_request(store, "기타", "q")
         kept = server.load_feature_requests(store)
         self.assertEqual(len(kept), 3)
-        self.assertEqual(sorted(r["count"] for r in kept.values()), [7, 8, 9])                                 # 요청이 가장 적은 주제부터 버린다(방금 1 늘린 '기타'도 해당)
+        n = len(server.FEATURE_TOPICS)
+        self.assertEqual(sorted(r["count"] for r in kept.values()), [n - 2, n - 1, n])                                 # 요청이 가장 적은 주제부터 버린다(방금 1 늘린 '기타'도 해당)
 
     def make_dir(self):
         import tempfile

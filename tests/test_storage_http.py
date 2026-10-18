@@ -158,6 +158,7 @@ class HttpTestBase(TempDataDirMixin):
             "fetch_watchlist_rows": mock.Mock(side_effect=lambda token, syms: [{"symbol": s} for s in syms]),
             "validate_weekly_report_symbols": mock.Mock(return_value=[]),
             "fetch_top_holdings": mock.Mock(return_value={"status": "none", "holdings": []}),   # ETF 편입 조회로 실제 네트워크를 쓰지 않는다
+            "try_local_plan": mock.Mock(return_value=None),                                       # 이 컴퓨터의 로컬 모델(Ollama)을 시험이 부르지 않게
             "search_stocks": mock.Mock(return_value=[]),                                          # 질문 속 새 종목 검색(토스·네이버)으로 실제 네트워크를 쓰지 않는다
             "fetch_fundamentals": mock.Mock(return_value={"status": "error", "metrics": None}),   # 밸류에이션 조회로 실제 네트워크를 쓰지 않는다
             "fetch_gold_monthly": mock.Mock(side_effect=ValueError("테스트: 금 월간 시세 조회 차단")),
@@ -172,6 +173,9 @@ class HttpTestBase(TempDataDirMixin):
             self.addCleanup(p.stop)
         server.reset_default_fred_key()
         self.addCleanup(server.reset_default_fred_key)
+        status_patch = mock.patch.object(server.local_model, "status", mock.Mock(return_value={"reachable": False, "ready": False, "model": server.local_model.DEFAULT_MODEL, "models": []}))
+        status_patch.start()                                                                  # 이 컴퓨터의 Ollama 상태를 시험이 보지 않게
+        self.addCleanup(status_patch.stop)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()

@@ -24,6 +24,8 @@ NO_FEATURE = [
     ("환차손익", ("환차익", "환차손", "환차손익", "매입환율", "환율손익"), "매입 시점 환율 기록이 없어 환차손익은 아직 계산하지 못합니다.", ["내 포트폴리오 보여줘"]),
     ("공매도·옵션·신용", ("공매도", "옵션", "신용거래", "대차잔고", "풋콜", "미결제"), "공매도·옵션·신용거래 데이터는 다루지 않습니다. 변동성(VIX) 반응은 볼 수 있습니다.", ["VIX가 급등하면 S&P500은 어떻게 돼?"]),
     ("절세·신고", ("절세", "신고방법", "홈택스", "연말정산", "양도세신고"), "세금 신고 절차나 절세 전략은 안내하지 않습니다. 지금 전량 매도했을 때의 세금 추정만 볼 수 있습니다.", ["전부 팔면 세금은?"]),
+    ("매매 심리 진단", ("포모", "fomo", "추격매수", "충동매수", "충동적으로", "뇌동매매", "공포매도", "물타기", "손절못", "멘탈", "투자습관", "매매습관"),
+     "포모(FOMO) 같은 심리나 매매 습관을 평가하지는 못합니다. 정해 둔 원칙(목표 비중·분할매수 전략)에 해당하는 수치는 보여 드릴 수 있습니다.", ["내가 정한 원칙과 현재 보유를 대조해줘", "{n} 고점 대비 왜 빠졌어?"]),
     ("가격 예측", ("몇퍼", "내일", "다음주", "언제오를", "언제살", "언제팔", "목표수익", "얼마까지오를"), "정확한 가격이나 시점은 예측하지 않습니다. 과거 통계와 요인 민감도로 만든 조건부 시나리오는 볼 수 있습니다.", ["{n} 앞으로의 상승/하락 뷰"]),
 ]
 GENERAL = ["이번 주 무엇을 확인해야 해?", "{n} 고평가야?", "{n} 고점 대비 왜 빠졌어?", "미국 금리가 오르면 금과 나스닥은 어떻게 돼?", "지금 미국 업종별 etf들 상태 어떰?"]
@@ -39,14 +41,16 @@ def _compact(text: str) -> str:
 
 
 def match_limit(question: str) -> dict | None:
-    """도구가 없다고 아는 주제나 주문 요청이면 그 정보({kind, topic, message, alternatives}), 아니면 None."""
+    """도구가 없다고 아는 주제나 주문 요청이면 그 정보({kind, topic, message, alternatives, exclusive}), 아니면 None.
+    exclusive=True(주문·매매 습관 평가처럼 가까운 도구로 대신 답하면 오해를 부르는 질문)는 어떤 도구도 부르지 않고 안내만 한다."""
     compact = _compact(question)
     if any(w in compact for w in TRADE_WORDS):
         return {"kind": "trade", "topic": "주문", "message": "이 대시보드는 읽기 전용이라 주문을 실행하지 않습니다(안전 장치). 얼마를 사고팔아야 하는지 계획은 볼 수 있습니다.",
-                "alternatives": ["리밸런싱 계획 보여줘"]}
-    for topic, words, message, alternatives in NO_FEATURE:
+                "alternatives": ["리밸런싱 계획 보여줘"], "exclusive": True}
+    for row in NO_FEATURE:
+        topic, words, message, alternatives = row[:4]
         if any(w in compact for w in words):
-            return {"kind": "no_feature", "topic": topic, "message": message, "alternatives": alternatives}
+            return {"kind": "no_feature", "topic": topic, "message": message, "alternatives": alternatives, "exclusive": len(row) > 4 and bool(row[4])}
     return None
 
 

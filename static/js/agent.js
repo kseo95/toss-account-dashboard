@@ -181,10 +181,24 @@ function setFredStatus(data) {
   $('fredSaveLabel').style.display = supported ? '' : 'none';      // 키체인은 macOS에서만
   $('fredForgetBtn').style.display = supported ? '' : 'none';
 }
-function setAgentMode(configured, model) {
+function setAgentMode(configured, model, local) {
+  const localOn = !!(local && local.enabled && local.ready);
   $('agentMode').textContent = configured
     ? 'AI 연결 · ' + model + ' · 읽기 전용'
-    : '규칙 기반 대체 모드 · 읽기 전용';
+    : localOn ? '로컬 모델 · ' + local.model + ' · 읽기 전용' : '규칙 기반 대체 모드 · 읽기 전용';
+  setLocalStatus(local);
+}
+
+// 로컬 모델(Ollama) 상태 표시와 켜기/끄기
+function setLocalStatus(local) {
+  const box = $('agentLocalEnable');
+  const label = $('agentLocalStatus');
+  if (!box || !label) return;
+  box.checked = !!(local && local.enabled);
+  label.textContent = !local ? '확인 불가'
+    : !local.reachable ? 'Ollama가 꺼져 있습니다(규칙 기반으로 처리)'
+    : !local.ready ? local.model + ' 모델이 아직 없습니다(규칙 기반으로 처리)'
+    : local.model + ' 사용 가능';
 }
 
 async function loadAgentConfig() {
@@ -192,7 +206,7 @@ async function loadAgentConfig() {
     const { ok, data } = await getJson('/api/agent/config');
     if (!ok) return;
     $('agentModel').value = data.model || 'claude-opus-5-5';
-    setAgentMode(data.configured, data.model);
+    setAgentMode(data.configured, data.model, data.local);
     setFredStatus(data);
     loadAgentMisses();
   } catch (e) { /* 다음 탭 진입이나 저장 때 다시 확인 */ }
@@ -305,6 +319,10 @@ $('agentConfigSaveBtn').addEventListener('click', () => saveAgentConfig(false));
 $('agentConfigClearBtn').addEventListener('click', () => saveAgentConfig(true));
 $('fredClearBtn').addEventListener('click', () => saveAgentConfig(false, true));
 $('fredForgetBtn').addEventListener('click', () => saveAgentConfig(false, false, true));
+$('agentLocalEnable').addEventListener('change', async () => {
+  const { ok, data } = await postJson('/api/agent/local', { enabled: $('agentLocalEnable').checked });
+  if (ok) { setLocalStatus(data); const cfg = await getJson('/api/agent/config'); if (cfg.ok) setAgentMode(cfg.data.configured, cfg.data.model, cfg.data.local); }
+});
 $('agentMissEnable').addEventListener('change', async () => {
   const { ok, data } = await postJson('/api/agent/misses', { enable: $('agentMissEnable').checked });
   if (ok) $('agentMissCount').textContent = (data.enabled ? '기록 켜짐' : '기록 꺼짐') + ' · ' + data.count + '건';
