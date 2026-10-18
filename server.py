@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from agent_loop import follow_ups, observations
-from agent_tools import (FOCUS_TOOLS, INTENT_LABELS, TEACHABLE_INTENTS, TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
+from agent_tools import (DRAWDOWN_WORDS, FOCUS_TOOLS, INTENT_LABELS, INTENT_WORDS, VALUATION_WORDS, TEACHABLE_INTENTS, TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
                          parse_response_query, parse_screen_query, parse_trend_query, plan_agent_query, plan_for_holding, plan_for_intent, plan_intent_name, suggest_questions)
 from intent_examples import DEFAULT_EXAMPLES
 from intent_matcher import MIN_CONTENT, IntentMatcher, normalize as normalize_question
@@ -49,6 +49,7 @@ from causes import rank_themes, themes_in
 from fundamentals import (INFO_CACHE_TTL, assess_etf, assess_stock, fetch_info as fetch_fundamentals, is_korean as is_korean_stock, peer_stats, sample_peers)
 from response import (DEFAULT_ASSETS as DEFAULT_RESPONSE_ASSETS, DEFAULT_HORIZON as DEFAULT_RESPONSE_HORIZON, HORIZONS as RESPONSE_HORIZONS, MAX_ASSETS as MAX_RESPONSE_ASSETS,
                       analyze as analyze_response, resolve_asset, resolve_factor)
+from symbols import candidate_tokens, choose as choose_symbol
 from drawdown import RISK_SYMBOLS, day_movers, search_term, worst_days
 from outlook import build_outlook
 from shocks import analyze as analyze_shocks
@@ -813,7 +814,7 @@ def macro_drivers_view(req: Request, args: dict | None = None) -> dict:
     같이 움직인 정도의 통계 추정이며 인과의 증명이 아니다(설명력 R²를 함께 돌려준다). args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만."""
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
-    entries, focused = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
     symbols = [f[0] for f in FACTORS] + [e["yahoo"] for e in entries if e["yahoo"]]
     closes = dict(zip(symbols, parallel_map(yahoo_closes, symbols, FACTOR_WORKERS)))
     factor_series = {f[0]: closes[f[0]] for f in FACTORS if closes.get(f[0])}
@@ -822,7 +823,7 @@ def macro_drivers_view(req: Request, args: dict | None = None) -> dict:
     for e in entries:
         series = closes.get(e["yahoo"]) if e["yahoo"] else None
         result = explain_asset(series, factors_for(e["yahoo"], factor_series)) if series else {"status": "no_data", "asset_change_pct": None}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "status": result["status"],
+        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": result["status"],
                       "weekly_change_pct": result.get("asset_change_pct"), "r2": result.get("r2"),
                       "drivers": result.get("contributions", []), "residual_pct": result.get("residual_pct")})
     items.sort(key=lambda x: (x["weekly_change_pct"] is None, -abs(x["weekly_change_pct"] or 0), not x["held"]))
@@ -862,7 +863,7 @@ def valuation_view(req: Request, args: dict | None = None) -> dict:
     야후 비공식 데이터이며 상대 평가다. 조회어에는 종목 코드만 쓴다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 4개)."""
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
-    entries, focused = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
     entries = [e for e in entries if e["yahoo"]]
     omitted += max(0, len(entries) - VALUATION_MAX)
     entries = entries[:VALUATION_MAX]
@@ -873,7 +874,7 @@ def valuation_view(req: Request, args: dict | None = None) -> dict:
         bench = b["metrics"] if b["status"] == "ok" else None
     items = []
     for e, g in zip(entries, got):
-        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "status": g["status"]}
+        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": g["status"]}
         if g["status"] != "ok":
             items.append(item)
             continue
@@ -968,7 +969,7 @@ def drawdown_view(req: Request, args: dict | None = None) -> dict:
     같이 움직인 정도의 통계 추정이며 인과의 증명이 아니다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 4개)."""
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
-    entries, focused = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
     entries = [e for e in entries if e["yahoo"]]
     omitted += max(0, len(entries) - DRAWDOWN_MAX)
     entries = entries[:DRAWDOWN_MAX]
@@ -979,7 +980,7 @@ def drawdown_view(req: Request, args: dict | None = None) -> dict:
     items = []
     for e in entries:
         series = closes.get(e["yahoo"])
-        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "status": "no_data"}
+        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": "no_data"}
         if series and len(series) > 2:
             dates = sorted(series)
             last = dates[-1]
@@ -1018,7 +1019,7 @@ def drawdown_view(req: Request, args: dict | None = None) -> dict:
 
 OUTLOOK_HISTORY_YEARS = 30   # 종목 자신의 일봉(상장 이후, 최대 30년). 더 긴 대용 시세는 long_history가 따로 알려 준다
 OUTLOOK_MAX_SYMBOLS = 12
-_JOSA = r"(?:으로|에서|이랑|[은는이가을를의도에와과만])?"
+_JOSA = r"(?:으로|에서|이랑|하고|[은는이가을를의도에와과만랑])?"
 
 
 def mentions(text: str, term: str) -> bool:
@@ -1057,6 +1058,65 @@ def typo_mentions(text: str, term: str) -> bool:
     return any(_one_edit_apart(token, term) for token in re.findall(r"[a-z0-9.\-]+", text.lower()) if len(token) >= TYPO_MIN_LENGTH)
 
 
+EXTRA_MAX = 3                       # 한 질문에서 보유·관심종목이 아닌 종목을 몇 개까지 볼지
+EXTRA_CACHE_TTL = 6 * 3600
+_extra_cache: dict[str, tuple[float, dict | None]] = {}
+_extra_lock = threading.Lock()
+
+
+def extra_skip_words() -> frozenset:
+    """검색에 보내지 않을 낱말: 질문 의도 낱말(고평가·요인·뉴스…)과 종목이 아닌 영문 약어."""
+    words = {w for ws in INTENT_WORDS.values() for w in ws} | set(VALUATION_WORDS) | set(DRAWDOWN_WORDS) | {w.lower() for w in NOT_TICKERS}
+    return frozenset(words | {"per", "pbr", "psr", "eps", "bps", "roe", "etf", "ma"})
+
+
+def resolve_extra_entries(req: Request, text: str, entries: list[dict]) -> list[dict]:
+    """질문에 적혔지만 보유·관심종목이 아닌 종목(예: "엔비디아 PER 어때?", "TSLA 왜 빠졌어?")을 토스 검증을 거친 검색으로 찾는다.
+    검색에는 후보 낱말(종목 이름·코드일 수 있는 것)만 보내고 질문 전체나 계좌 정보는 보내지 않는다. 이름·코드가 정확히 맞는 결과만 받는다.
+    찾은 종목은 held=False, extra=True인 항목으로 최대 EXTRA_MAX개. 검색 실패·인증 문제는 그 낱말만 건너뛴다."""
+    known = {e["symbol"].lower() for e in entries} | {re.sub(r"\s+", "", e["name"]).lower() for e in entries}
+    tokens = [t for t in candidate_tokens(text, extra_skip_words()) if t.lower() not in known and not any(t.lower() in k for k in known if len(k) >= 3)]
+    if not tokens:
+        return []
+    now = time.time()
+
+    def one(token):
+        key = token.lower()
+        with _extra_lock:
+            hit = _extra_cache.get(key)
+            if hit and now - hit[0] < EXTRA_CACHE_TTL:
+                return hit[1]
+        try:
+            results = call_with_reauth(req.session, lambda t: search_stocks(t, token, 5))
+        except (requests.RequestException, ValueError, KeyError, ApiError):
+            return None                                           # 일시 오류는 캐시하지 않는다
+        pick = choose_symbol(token, results)
+        entry = None
+        if pick:
+            yahoo = toss_to_yahoo_symbol(pick["symbol"], pick.get("market"), pick.get("currency", ""))
+            if yahoo:
+                entry = {"symbol": pick["symbol"], "name": pick.get("name") or pick["symbol"], "currency": pick.get("currency", ""), "market": pick.get("market"),
+                         "held": False, "extra": True, "yahoo": yahoo}
+        with _extra_lock:
+            _extra_cache[key] = (now, entry)
+        return entry
+    found, seen = [], {e["symbol"] for e in entries}
+    for entry in parallel_map(one, tokens, 4):
+        if entry and entry["symbol"] not in seen:
+            seen.add(entry["symbol"])
+            found.append(dict(entry))
+    return found[:EXTRA_MAX]
+
+
+def focus_with_extras(req: Request, entries: list[dict], categories: list[dict], focus: str) -> tuple[list[dict], bool]:
+    """focus_entries에 '보유·관심종목이 아닌 종목'을 더한다. 질문이 보유·관심종목과 새 종목을 함께 가리키면 둘 다, 새 종목만이면 새 종목만 돌려준다."""
+    matched, focused = focus_entries(entries, categories, focus)
+    extras = resolve_extra_entries(req, focus, entries) if focus.strip() else []
+    if extras:
+        return (matched if focused else []) + extras, True
+    return matched, focused
+
+
 def focus_entries(entries: list[dict], categories: list[dict], focus: str) -> tuple[list[dict], bool]:
     """질문에서 가리킨 종목만 고른다: 종목 코드·이름, 또는 리밸런싱 카테고리 이름(그 카테고리의 종목들).
     정확히 일치하는 게 없으면 영문 코드의 한 글자 오타까지 받는다. 아무것도 못 찾으면 전체를 돌려주고 찾았는지(False)를 알린다."""
@@ -1084,7 +1144,9 @@ def focus_info(req: Request, question: str) -> dict:
     except (requests.RequestException, ValueError, KeyError):
         return empty
     matched, found = focus_entries(entries, categories, question)
-    known = {e["symbol"].upper() for e in entries} | {w.upper() for e in entries for w in re.findall(r"[A-Za-z0-9]+", e["name"])}
+    extras = resolve_extra_entries(req, question, entries)          # 보유·관심종목이 아니어도 이름·코드로 찾을 수 있는 종목이면 '종목을 가리킨 질문'으로 본다
+    found = found or bool(extras)
+    known = {e["symbol"].upper() for e in entries + extras} | {w.upper() for e in entries + extras for w in re.findall(r"[A-Za-z0-9]+", e["name"])}
     unknown = [tok for tok in dict.fromkeys(re.findall(r"(?<![A-Za-z0-9])[A-Z]{2,6}(?![A-Za-z0-9])", question))
                if tok not in NOT_TICKERS and tok not in known and not any(typo_mentions(tok, e["symbol"]) for e in entries)]
     return {"found": found, "names": [e["name"] for e in entries[:4]], "unknown": unknown[:3]}
@@ -1096,7 +1158,7 @@ def outlook_view(req: Request, args: dict | None = None) -> dict:
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
     categories = load_rebalance_config(req.store)["targets"]
-    entries, focused = focus_entries(entries, categories, focus)
+    entries, focused = focus_with_extras(req, entries, categories, focus)
     omitted += max(0, len(entries) - OUTLOOK_MAX_SYMBOLS)
     entries = entries[:OUTLOOK_MAX_SYMBOLS]
     asset_symbols = [e["yahoo"] for e in entries if e["yahoo"]]
@@ -1125,7 +1187,7 @@ def outlook_view(req: Request, args: dict | None = None) -> dict:
             closes = proxy_closes.get(source["symbol"])
             long_series, long_error = ({"kind": "daily", "series": closes, "label": source["label"]} if closes else None), source["label"]
         result = build_outlook(series, factors_for(e["yahoo"], factor_series), long_series, long_error) if series else {"status": "no_data", "history_days": 0}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], **result})
+        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), **result})
     return {"items": items, "focus": focus, "focused": focused, "omitted": omitted}
 
 
@@ -1142,7 +1204,7 @@ def etf_breakdown_view(req: Request, args: dict | None = None) -> dict:
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
     categories = load_rebalance_config(req.store)["targets"]
-    entries, focused = focus_entries(entries, categories, focus)
+    entries, focused = focus_with_extras(req, entries, categories, focus)
     entries = [e for e in entries if e["yahoo"]]
     holdings = dict(zip((e["symbol"] for e in entries), parallel_map(lambda e: fetch_top_holdings(e["yahoo"]), entries, 4)))
     etfs = [e for e in entries if holdings[e["symbol"]]["status"] == "ok"]
@@ -1158,7 +1220,7 @@ def etf_breakdown_view(req: Request, args: dict | None = None) -> dict:
     for e in etfs:
         series = closes.get(e["yahoo"])
         result = etf_breakdown(series, holdings[e["symbol"]]["holdings"], {s: c for s, c in closes.items() if c}) if series else {"status": "no_data"}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], **result, "drivers": {}, "headlines": {}})
+        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), **result, "drivers": {}, "headlines": {}})
     leaders = {i["symbol"]: [r for r in i.get("rows", []) if r["contribution_pct"] is not None][:ETF_TOP_CONTRIBUTORS]
                for i in items if i["status"] == "ok"}
     if any(leaders.values()):   # 큰 기여 종목의 요인 분석(기존 매크로 회귀)과 보도
@@ -1192,7 +1254,7 @@ def macro_history_view(req: Request, args: dict | None = None) -> dict:
     금 ETF·주요 지수 ETF는 더 긴 대용 일봉(금 선물·지수)으로 본다."""
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
-    entries, focused = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
     entries = [e for e in entries if e["yahoo"]]
     omitted += max(0, len(entries) - MACRO_HISTORY_MAX)
     entries = entries[:MACRO_HISTORY_MAX]
@@ -1207,7 +1269,7 @@ def macro_history_view(req: Request, args: dict | None = None) -> dict:
         proxy = closes.get(source["symbol"]) if source else None
         used, label = (proxy, source["label"]) if proxy and (not own or len(proxy) > len(own)) else (own, None)
         result = analyze_shocks(used, factors_for(e["yahoo"], factor_series)) if used else {"status": "no_data", "history_days": 0}   # 요인을 못 받아도 이름 붙은 이슈 반응은 계산한다
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "source": label, **result})
+        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "source": label, **result})
     return {"items": items, "focus": focus, "focused": focused, "omitted": omitted}
 
 
@@ -1232,7 +1294,7 @@ def macro_cases_view(req: Request, args: dict | None = None) -> dict:
     asset = None
     if focus:
         entries, _omitted = portfolio_entries(req)
-        matched, found = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+        matched, found = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
         entry = next((e for e in matched if e["yahoo"]), None) if found else None
         series = yahoo_closes(entry["yahoo"], LONG_PROXY_YEARS) if entry else None
         if entry and series:
@@ -1251,7 +1313,7 @@ def asset_drivers_view(req: Request, args: dict | None = None) -> dict:
     args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 4개). 금 ETF·주요 지수 ETF는 더 긴 대용 일봉(금 선물·지수)으로 본다."""
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
-    entries, focused = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
     entries = [e for e in entries if e["yahoo"]]
     omitted += max(0, len(entries) - ASSET_DRIVERS_MAX)
     entries = entries[:ASSET_DRIVERS_MAX]
@@ -1266,7 +1328,7 @@ def asset_drivers_view(req: Request, args: dict | None = None) -> dict:
         proxy = closes.get(source["symbol"]) if source else None
         used, label = (proxy, source["label"]) if proxy and (not own or len(proxy) > len(own)) else (own, None)
         result = rank_drivers(used, factors_for(e["yahoo"], factor_series)) if used and factor_series else {"status": "no_data"}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "source": label, **result})
+        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "source": label, **result})
     return {"items": items, "focus": focus, "focused": focused, "omitted": omitted}
 
 
@@ -1345,7 +1407,7 @@ def weekly_news_view(req: Request, args: dict | None = None) -> dict:
     뉴스 조회어에는 종목 이름·코드만 쓰고 수량·금액·계좌 정보는 보내지 않는다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만."""
     focus = str((args or {}).get("focus") or "").strip()[:200]
     entries, omitted = portfolio_entries(req)
-    entries, focused = focus_entries(entries, load_rebalance_config(req.store)["targets"], focus)
+    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
 
     def change(entry):
         if not entry["yahoo"]:
@@ -1356,7 +1418,7 @@ def weekly_news_view(req: Request, args: dict | None = None) -> dict:
             return None
     changes = parallel_map(change, entries, 4)
     headlines = headlines_for_many([{"symbol": e["symbol"], "name": e["name"], "use_yahoo": e["currency"] != "KRW"} for e in entries])
-    items = [{"symbol": e["symbol"], "name": e["name"], "held": e["held"], "weekly_change_pct": c,
+    items = [{"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "weekly_change_pct": c,
               "headlines": headlines[e["symbol"]]["headlines"], "news_error": headlines[e["symbol"]]["error"]}
              for e, c in zip(entries, changes)]
     items.sort(key=lambda x: (x["weekly_change_pct"] is None, -abs(x["weekly_change_pct"] or 0), not x["held"]))

@@ -339,7 +339,7 @@ def outlook_view_result(data: dict) -> dict:
     """뷰 재료에서 숫자와 짧은 이름만 남긴다(종목 12개, 시나리오 요인 3개까지)."""
     items = []
     for it in data.get("items", [])[:12]:
-        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")),
+        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                 "status": "ok" if it.get("status") == "ok" else "no_data", "history_days": int(_number(it.get("history_days")) or 0)}
         if base["status"] == "ok":
             an = it.get("analogs") or {}
@@ -389,7 +389,7 @@ def macro_history_result(data: dict) -> dict:
                  "return_pct": _round(r.get("return_pct"), 1), "z": _round(r.get("z"), 1)} for r in (rows or [])[:3]]
     items = []
     for it in data.get("items", [])[:6]:
-        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")),
+        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                 "status": "ok" if it.get("status") == "ok" else "no_data", "history_days": int(_number(it.get("history_days")) or 0),
                 "source": str(it.get("source") or "")[:40] or None}
         if base["status"] == "ok":
@@ -432,7 +432,7 @@ def asset_drivers_result(data: dict) -> dict:
                 "absorbed": [str(x)[:30] for x in (d.get("absorbed") or [])[:4]]}
     items = []
     for it in data.get("items", [])[:4]:
-        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")),
+        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                 "status": "ok" if it.get("status") == "ok" else "no_data", "source": str(it.get("source") or "")[:40] or None}
         if base["status"] == "ok":
             model = it.get("model") or {}
@@ -558,7 +558,7 @@ def etf_breakdown_result(data: dict) -> dict:
     """ETF 구성 종목 기여에서 숫자와 짧은 이름만 남긴다(ETF 6개, 편입 종목 15개, 큰 기여 종목 요인 2개·보도 3건까지)."""
     items = []
     for it in data.get("items", [])[:6]:
-        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")),
+        base = {"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                 "status": "ok" if it.get("status") == "ok" else "no_data"}
         if base["status"] == "ok":
             rows = [{"symbol": str(r.get("symbol") or "")[:15], "name": str(r.get("name") or "")[:60], "weight_pct": _round(r.get("weight_pct")),
@@ -610,7 +610,7 @@ def macro_drivers(data: dict) -> dict:
                     "factor_change": _number(d.get("factor_change")), "unit": "bp" if d.get("kind") == "level" else "%",
                     "contribution_pct": _number(d.get("contribution_pct")), "t": _round(d.get("t"), 1),
                     "stable": d.get("stable") if isinstance(d.get("stable"), bool) else None} for d in it.get("drivers", [])[:3]]
-        items.append({"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")),
+        items.append({"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                       "status": str(it.get("status") or "no_data"), "weekly_change_pct": _number(it.get("weekly_change_pct")),
                       "r2": _number(it.get("r2")), "oos_r2": _round(it.get("oos_r2")),
                       "reason": it.get("reason") if it.get("reason") in ("low_r2", "unstable") else "",
@@ -637,7 +637,7 @@ def weekly_news(data: dict) -> dict:
             if url and h.get("title"):
                 headlines.append({"title": str(h["title"])[:TITLE_MAX], "source": str(h.get("source") or "")[:SOURCE_MAX],
                                   "published": str(h.get("published") or "")[:10], "url": url})
-        items.append({"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")),
+        items.append({"symbol": str(it.get("symbol") or ""), "name": str(it.get("name") or ""), "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                       "weekly_change_pct": _number(it.get("weekly_change_pct")), "headlines": headlines,
                       "news_error": bool(it.get("news_error"))})
     return {
@@ -661,7 +661,7 @@ def drawdown_result(data: dict) -> dict:
                     "stable": d.get("stable") if isinstance(d.get("stable"), bool) else None} for d in (it.get("drivers") or [])[:3]]
         moves = [{"label": str(m.get("label") or ""), "change": _number(m.get("change")), "unit": "bp" if m.get("unit") == "bp" else "%", "phrase": str(m.get("phrase") or ""),
                   "group": "peer" if m.get("group") == "peer" else "macro"} for m in (it.get("moves") or [])[:60]]
-        row = {"symbol": str(it.get("symbol") or "")[:12], "name": str(it.get("name") or "")[:40], "held": bool(it.get("held")),
+        row = {"symbol": str(it.get("symbol") or "")[:12], "name": str(it.get("name") or "")[:40], "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                "status": it.get("status") if it.get("status") in ("ok", "weak", "near_peak", "no_data") else "no_data",
                "reason": it.get("reason") if it.get("reason") in ("low_r2", "unstable") else "", "basis": "market" if it.get("basis") == "market" else "macro",
                "r2": _number(it.get("r2")), "oos_r2": _round(it.get("oos_r2")), "drivers": drivers, "residual_pct": _round(it.get("residual_pct")), "moves": moves}
@@ -743,7 +743,7 @@ def valuation_result(data: dict) -> dict:
     """밸류에이션 결과에서 숫자와 짧은 글만 남긴다(종목 4개, 신호 6개까지)."""
     items = []
     for it in (data.get("items") or [])[:4]:
-        row = {"symbol": str(it.get("symbol") or "")[:15], "name": str(it.get("name") or "")[:40], "held": bool(it.get("held")),
+        row = {"symbol": str(it.get("symbol") or "")[:15], "name": str(it.get("name") or "")[:40], "held": bool(it.get("held")), "extra": bool(it.get("extra")),
                "status": it.get("status") if it.get("status") in ("ok", "error", "unavailable") else "error"}
         if row["status"] == "ok":
             m = it.get("metrics") or {}
@@ -1109,6 +1109,11 @@ def suggest_questions(names: list[str], limit: int = 6) -> list[str]:
     return out[:limit]
 
 
+def _origin_tag(item: dict) -> str:
+    """보유가 아닌 종목의 표시: 질문에서 이름·코드로 찾아 본 종목은 '조회', 관심종목은 '관심'."""
+    return " · 조회" if item.get("extra") else "" if item.get("held") else " · 관심"
+
+
 def _won(value) -> str:
     return f"{float(value or 0):,.0f}원"
 
@@ -1261,8 +1266,7 @@ def _compose_outlook(data: dict, bullets: list, tables: list, notes: list, limit
     rows = []
     for i in items:
         label = f"{i['name']} ({i['symbol']})" if i.get("name") and i["name"] != i["symbol"] else i["symbol"]
-        if not i.get("held"):
-            label += " · 관심"
+        label += _origin_tag(i)
         if i.get("status") != "ok":
             rows.append([label, "시세 기록이 짧아(" + f"{i.get('history_days', 0)}거래일) 계산하지 못했습니다", "-", "-", "-"])
             continue
@@ -1337,8 +1341,7 @@ def _compose_macro(data: dict, bullets: list, tables: list, notes: list, limitat
         if i.get("status") == "ok" and i.get("drivers"):     # 요인별 기여는 그래프로 보여 준다 — 표에는 설명이 안 되는 종목의 이유만 남긴다
             continue
         label = f"{i['name']} ({i['symbol']})" if i.get("name") and i["name"] != i["symbol"] else i["symbol"]
-        if not i.get("held"):
-            label += " · 관심"
+        label += _origin_tag(i)
         change = f"{i['weekly_change_pct']:+.1f}%" if i.get("weekly_change_pct") is not None else "-"
         if i.get("status") == "no_data":
             cell, r2 = "시세나 요인 데이터가 부족해 계산하지 못했습니다", "-"
@@ -1382,8 +1385,7 @@ def _compose_news(data: dict, bullets: list, tables: list, notes: list, limitati
     rows = []
     for i in items[:NEWS_TABLE_ROWS]:
         label = f"{i['name']} ({i['symbol']})" if i.get("name") and i["name"] != i["symbol"] else i["symbol"]
-        if not i.get("held"):
-            label += " · 관심"
+        label += _origin_tag(i)
         change = f"{i['weekly_change_pct']:+.1f}%" if i.get("weekly_change_pct") is not None else "-"
         if i.get("headlines"):
             cell = {"links": [{"text": h["title"], "href": h["url"], "meta": " · ".join(x for x in (h.get("source"), h.get("published")) if x)}
@@ -1421,8 +1423,7 @@ def _compose_history(data: dict, bullets: list, tables: list, notes: list, limit
     rows, event_rows, failed = [], [], []
     for i in items:
         label = f"{i['name']} ({i['symbol']})" if i.get("name") and i["name"] != i["symbol"] else i["symbol"]
-        if not i.get("held"):
-            label += " · 관심"
+        label += _origin_tag(i)
         if i.get("status") != "ok":
             failed.append(i["symbol"])
             continue
@@ -1930,8 +1931,7 @@ def _compose_etf(data: dict, bullets: list, tables: list, notes: list, limitatio
     rows = []
     for i in ok[:ETF_TABLE_ROWS]:
         label = f"{i['name']} ({i['symbol']})" if i.get("name") and i["name"] != i["symbol"] else i["symbol"]
-        if not i.get("held"):
-            label += " · 관심"
+        label += _origin_tag(i)
         moves = []
         for r in (i.get("rows") or [])[:ETF_SHOWN_ROWS]:
             if r.get("contribution_pct") is None:
