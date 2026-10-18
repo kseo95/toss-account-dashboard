@@ -115,7 +115,7 @@ class ValuationHttpTest(storage_http.HttpTestBase, unittest.TestCase):
     def test_a_failed_lookup_is_isolated(self):
         cookie = self.login("key-a")
         items = {i["symbol"]: i for i in self.tool(cookie, ["RICH", "BROKEN"])[1]["result"]["items"]}
-        self.assertEqual(items["BROKEN"], {"symbol": "BROKEN", "name": "BROKEN", "held": True, "status": "error"})
+        self.assertEqual(items["BROKEN"], {"symbol": "BROKEN", "name": "BROKEN", "held": True, "extra": False, "status": "error"})
         self.assertEqual(items["RICH"]["status"], "ok")
 
     def test_focus_limits_the_stocks_and_the_benchmark_is_only_fetched_for_etfs(self):

@@ -158,6 +158,7 @@ class HttpTestBase(TempDataDirMixin):
             "fetch_watchlist_rows": mock.Mock(side_effect=lambda token, syms: [{"symbol": s} for s in syms]),
             "validate_weekly_report_symbols": mock.Mock(return_value=[]),
             "fetch_top_holdings": mock.Mock(return_value={"status": "none", "holdings": []}),   # ETF 편입 조회로 실제 네트워크를 쓰지 않는다
+            "search_stocks": mock.Mock(return_value=[]),                                          # 질문 속 새 종목 검색(토스·네이버)으로 실제 네트워크를 쓰지 않는다
             "fetch_fundamentals": mock.Mock(return_value={"status": "error", "metrics": None}),   # 밸류에이션 조회로 실제 네트워크를 쓰지 않는다
             "fetch_gold_monthly": mock.Mock(side_effect=ValueError("테스트: 금 월간 시세 조회 차단")),
             "read_default_key": mock.Mock(return_value=(None, None)),            # 개발자 PC의 환경변수·키체인 FRED 키가 테스트에 섞이지 않게

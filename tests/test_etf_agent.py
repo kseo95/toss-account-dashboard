@@ -50,7 +50,7 @@ class FormatTest(unittest.TestCase):
 
     def test_failed_item_keeps_only_its_status(self):
         out = format_tool_result("get_etf_breakdown", raw(items=[{"symbol": "ZZZ", "name": "ZZZ", "status": "no_data", "rows": [row("A", 1, 1, 1)]}]))["result"]
-        self.assertEqual(out["items"][0], {"symbol": "ZZZ", "name": "ZZZ", "held": False, "status": "no_data"})
+        self.assertEqual(out["items"][0], {"symbol": "ZZZ", "name": "ZZZ", "held": False, "extra": False, "status": "no_data"})
 
 
 class PlanTest(unittest.TestCase):

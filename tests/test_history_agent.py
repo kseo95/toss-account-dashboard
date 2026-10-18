@@ -54,7 +54,7 @@ class FormatTest(unittest.TestCase):
 
     def test_failed_item_keeps_only_status(self):
         out = format_tool_result("get_macro_history", raw([{"symbol": "ZZZ", "name": "ZZZ", "status": "no_data", "active": [shock()]}]))["result"]
-        self.assertEqual(set(out["items"][0]), {"symbol", "name", "held", "status", "history_days", "source"})
+        self.assertEqual(set(out["items"][0]), {"symbol", "name", "held", "extra", "status", "history_days", "source"})
 
 
 class PlanTest(unittest.TestCase):
