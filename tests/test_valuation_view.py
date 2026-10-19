@@ -210,7 +210,7 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(plan_agent_query("금이 왜 고점 대비 빠졌어?")["tools"], ["get_drawdown_analysis"])
         self.assertEqual(plan_agent_query("미국 금리가 오르면 금과 나스닥은 어떻게 됨?")["tools"], ["get_factor_response"])
         self.assertEqual(plan_agent_query("지금 미국 업종별 etf들 상태 어떰?")["tools"], ["get_sector_trends"])
-        self.assertEqual(plan_agent_query("전부 팔면 세금은?")["tools"], ["estimate_liquidation_tax"])
+        self.assertEqual(plan_agent_query("섹터 노출 보여줘")["tools"], ["get_sector_exposure"])
 
 
 class ComposeTest(unittest.TestCase):

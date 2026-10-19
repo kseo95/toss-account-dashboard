@@ -121,6 +121,28 @@ class RulesViewHttpTest(storage_http.HttpTestBase, unittest.TestCase):
         for needle in ("11100000001", "tok-a", "quantity", "marketValue"):
             self.assertNotIn(needle, text)
 
+    def test_cash_target_is_compared_like_a_category(self):
+        cookie = self.login("key-a")
+        store = server.store_for(next(iter(server._sessions.values())))
+        server.save_rebalance_config(store, [{"label": "우주", "symbols": ["UFO", "NASA"], "target_pct": 50.0}], 5.0, 50.0, 50.0)
+        with mock.patch.object(server, "fetch_account_snapshot", return_value={**self.snapshot(), "cash_krw": 300000.0}), mock.patch.object(portfolio, "get_cached_usd_jpy_quote", return_value=None), \
+                mock.patch.object(server, "strategy_signals_for", return_value={}):
+            result = self.request("POST", "/api/agent/tool", {"name": "get_my_rules"}, cookie=cookie)[1]["result"]
+        cash = next(t for t in result["targets"] if t["label"] == "현금")
+        self.assertEqual((cash["target_pct"], cash["value_krw"]), (50.0, 300000.0))
+        self.assertAlmostEqual(cash["actual_pct"], 30.0, places=1)                                   # 우주 700,000 + 현금 300,000
+        text = "\n".join(compose_agent_answer({"get_my_rules": result})["bullets"])
+        self.assertIn("현금(예수금·현금 취급 종목): 목표 50% → 현재 30.0%", text)
+
+    def test_cash_target_setting_is_saved_cleared_and_validated(self):
+        cookie = self.login("key-a")
+        body = {"targets": [], "default_rest_target_pct": 5, "krw_target_pct": 50}
+        self.assertIsNone(self.request("GET", "/api/rebalance-config", cookie=cookie)[1]["cash_target_pct"])
+        self.assertEqual(self.request("POST", "/api/rebalance-config", {**body, "cash_target_pct": 15}, cookie=cookie)[1]["cash_target_pct"], 15)
+        self.assertEqual(self.request("GET", "/api/rebalance-config", cookie=cookie)[1]["cash_target_pct"], 15)
+        self.assertIsNone(self.request("POST", "/api/rebalance-config", {**body, "cash_target_pct": ""}, cookie=cookie)[1]["cash_target_pct"])   # 비우면 현금 제외
+        self.assertEqual(self.request("POST", "/api/rebalance-config", {**body, "cash_target_pct": 150}, cookie=cookie)[0], 400)
+
     def test_requires_login(self):
         self.assertEqual(self.request("POST", "/api/agent/tool", {"name": "get_my_rules"})[0], 401)
 
@@ -173,18 +195,18 @@ class LoopServerTest(storage_http.HttpTestBase, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.executed = []
-        tax = {"summary": {"estimated_tax_krw": 5000, "capital_gains_tax_krw": 4000, "domestic_transaction_and_etf_tax_krw": 1000}, "warnings": [], "limitations": []}
+        sector = {"configured": True, "sectors": [{"label": "반도체", "exposure_krw": 5000, "exposure_pct": 50.0, "holdings": [{"symbol": "AAA", "name": "에이"}]}], "unmapped_count": 0, "limitations": []}
 
         def execute(req, name, args=None):
             self.executed.append(name)
-            return {"result": tax}
+            return {"result": sector}
         self.steps = []
         self.state = {"enabled": True, "reachable": True, "ready": True, "model": "qwen2.5:7b-instruct"}
 
         def observe(messages, calls, digests, question, model, post=None):
             self.seen = (calls, digests)
             return self.steps.pop(0)
-        for name, value in {"try_local_plan": mock.Mock(side_effect=lambda req, q, h: {"calls": [{"name": "estimate_liquidation_tax", "args": {}}], "messages": [{"role": "user", "content": q}], "assistant": {}}),
+        for name, value in {"try_local_plan": mock.Mock(side_effect=lambda req, q, h: {"calls": [{"name": "get_sector_exposure", "args": {}}], "messages": [{"role": "user", "content": q}], "assistant": {}}),
                             "local_state": mock.Mock(side_effect=lambda store: dict(self.state)),
                             "execute_agent_tool": mock.Mock(side_effect=execute)}.items():
             p = mock.patch.object(server, name, value)
@@ -201,34 +223,34 @@ class LoopServerTest(storage_http.HttpTestBase, unittest.TestCase):
 
     def test_the_model_sees_the_tool_result_digest_and_its_final_answer_is_used(self):
         cookie = self.login("key-a")
-        self.steps = [{"calls": [], "final": "추정 세금은 5,000원입니다."}]
-        payload = self.ask(cookie, "정리하면 세금은")[1]
-        self.assertEqual(payload["answer"]["bullets"][0], "요약: 추정 세금은 5,000원입니다.")
+        self.steps = [{"calls": [], "final": "반도체 노출은 5,000원입니다."}]
+        payload = self.ask(cookie, "정리하면 섹터는")[1]
+        self.assertEqual(payload["answer"]["bullets"][0], "요약: 반도체 노출은 5,000원입니다.")
         calls, digests = self.seen
-        self.assertIn("전량 매도 가정 추정 세금은 5,000원", digests["estimate_liquidation_tax"])                     # 모델은 도구가 만든 한국어 요약 글을 본다
-        self.assertEqual(self.executed, ["estimate_liquidation_tax"])
+        self.assertIn("반도체: 내 노출 5,000원", digests["get_sector_exposure"])                     # 모델은 도구가 만든 한국어 요약 글을 본다
+        self.assertEqual(self.executed, ["get_sector_exposure"])
 
     def test_a_requested_extra_tool_runs_once_and_the_loop_is_capped(self):
         cookie = self.login("key-a")
-        self.steps = [{"calls": [{"name": "get_sector_exposure", "args": {}}], "final": ""}, {"calls": [{"name": "get_sector_exposure", "args": {}}, {"name": "get_weekly_news", "args": {}}], "final": ""},
+        self.steps = [{"calls": [{"name": "get_weekly_risk_report", "args": {}}], "final": ""}, {"calls": [{"name": "get_weekly_risk_report", "args": {}}, {"name": "get_weekly_news", "args": {}}], "final": ""},
                       {"calls": [{"name": "get_outlook", "args": {}}], "final": ""}]
         payload = self.ask(cookie, "자세히")[1]
         tools = [e["tool"] for e in payload["executions"]]
-        self.assertEqual(tools[0], "estimate_liquidation_tax")
+        self.assertEqual(tools[0], "get_sector_exposure")
         self.assertEqual(len(tools), len(set(tools)))                                                            # 같은 도구를 다시 부르지 않는다
         self.assertLessEqual(len(tools), 1 + lm.MAX_ROUNDS * 2)
         self.assertTrue(any(e.get("reason") == "로컬 모델이 결과를 보고 추가로 선택" for e in payload["executions"][1:]))
 
     def test_an_ungrounded_or_failed_final_answer_falls_back_to_the_plain_answer(self):
         cookie = self.login("key-a")
-        self.steps = [{"calls": [], "final": "추정 세금은 9,999원입니다."}]                                        # 도구 결과에 없는 숫자
+        self.steps = [{"calls": [], "final": "반도체 노출은 9,999원입니다."}]                                        # 도구 결과에 없는 숫자
         with mock.patch.object(server, "local_summary", return_value=None):
-            bullets = self.ask(cookie, "세금")[1]["answer"]["bullets"]
+            bullets = self.ask(cookie, "섹터")[1]["answer"]["bullets"]
         self.assertFalse(any(b.startswith("요약:") for b in bullets))
-        self.assertTrue(any("전량 매도 가정 추정 세금은 5,000원" in b for b in bullets))                          # 도구가 만든 답은 그대로
+        self.assertTrue(any("반도체: 내 노출 5,000원" in b for b in bullets))                          # 도구가 만든 답은 그대로
         import requests as rq
         with mock.patch.object(lm, "observe", side_effect=rq.ConnectionError("꺼짐")), mock.patch.object(server, "local_summary", return_value=None):
-            payload = self.ask(cookie, "세금")[1]
+            payload = self.ask(cookie, "섹터")[1]
         self.assertEqual(payload["mode"], "local_model")
         self.assertTrue(payload["answer"]["bullets"])
 

@@ -14,7 +14,6 @@ CASES = [
  ("미국 금리가 오르면 금과 나스닥은 어떻게 돼?", [{"get_factor_response"}]),
  ("이번 주 뭘 확인해야 해?", [{"get_portfolio_overview"},{"get_weekly_risk_report"},{"get_portfolio_overview","get_weekly_risk_report"}]),
  ("지금 미국 업종별 ETF 상태 어때?", [{"get_sector_trends"}]),
- ("전부 팔면 세금이 얼마야?", [{"estimate_liquidation_tax"}]),
  ("애플 뉴스랑 전망 알려줘", [{"get_weekly_news","get_outlook"},{"get_weekly_news"},{"get_outlook"}]),
  ("내 종목 중에 저평가인 거 있어?", [{"get_valuation"}]),
  ("팔란티어가 요즘 왜 이렇게 올랐어", [{"get_macro_drivers"},{"get_weekly_news"},{"get_macro_drivers","get_weekly_news"},{"get_etf_breakdown"}]),

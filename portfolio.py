@@ -34,7 +34,7 @@ def load_rebalance_config(store: UserStore) -> dict:
     """파일이 없거나 깨졌으면 기본값(카테고리 없음, 미분류 종목은 각각 5%, 원/달러 목표 50/50)."""
     data = store.read_json(REBALANCE_CONFIG_FILE)
     if not isinstance(data, dict):
-        return {**REBALANCE_DEFAULT, "targets": []}
+        return {**REBALANCE_DEFAULT, "targets": [], "cash_target_pct": None}
     clean_targets = []
     for t in data.get("targets", []):
         if not isinstance(t, dict):
@@ -47,12 +47,14 @@ def load_rebalance_config(store: UserStore) -> dict:
         "targets": clean_targets,
         "default_rest_target_pct": to_float(data.get("default_rest_target_pct"), REBALANCE_DEFAULT["default_rest_target_pct"]),
         "krw_target_pct": to_float(data.get("krw_target_pct"), REBALANCE_DEFAULT["krw_target_pct"]),
+        "cash_target_pct": None if data.get("cash_target_pct") is None else to_float(data.get("cash_target_pct")),  # None = 현금 목표 없음(리밸런싱 계산에서 제외)
     }
 
 
-def save_rebalance_config(store: UserStore, targets: list[dict], default_rest_target_pct: float, krw_target_pct: float) -> None:
+def save_rebalance_config(store: UserStore, targets: list[dict], default_rest_target_pct: float, krw_target_pct: float,
+                          cash_target_pct: float | None = None) -> None:
     store.write_json(REBALANCE_CONFIG_FILE, {"targets": targets, "default_rest_target_pct": default_rest_target_pct,
-                                             "krw_target_pct": krw_target_pct})
+                                             "krw_target_pct": krw_target_pct, "cash_target_pct": cash_target_pct})
 
 
 def validate_rebalance_targets(targets) -> tuple[list[dict], str | None]:
@@ -132,6 +134,10 @@ def compute_rebalance(all_rows: list[dict], cash_krw_total: float, cash_symbols:
             merged[r["label"]]["current_pct"] += r["current_pct"]
         else:
             merged[r["label"]] = dict(r)
+    cash_target = config.get("cash_target_pct")
+    if cash_target is not None:  # 현금 목표를 정했으면 현금도 카테고리로 계산한다(현금이 0이어도 목표 행을 둔다)
+        cash = merged.setdefault(REBALANCE_CASH_LABEL, {"label": REBALANCE_CASH_LABEL, "current_pct": 0.0})
+        cash.update(target_pct=cash_target, category=True)
     return list(merged.values())
 
 

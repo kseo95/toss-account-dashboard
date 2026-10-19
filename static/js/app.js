@@ -55,12 +55,12 @@ $('logoutBtn').addEventListener('click', async () => {
   showLoggedOut();
 });
 
-// 페이지 탭. 주간 리포트·세금은 탭을 처음 열 때만 불러온다.
-const PAGES = { portfolio: 'pagePortfolio', report: 'pageReport', tax: 'pageTax', agent: 'pageAgent' };
+// 페이지 탭. 주간 리포트·거래는 탭을 처음 열 때만 불러온다.
+const PAGES = { portfolio: 'pagePortfolio', report: 'pageReport', trades: 'pageTrades', agent: 'pageAgent' };
 const pageLoaded = {};
 const PAGE_LOADERS = {
   report: () => { loadWeeklyReport(false); loadWeeklyReportConfig(); },
-  tax: () => { loadTax(); loadTrades(); loadDividends(); },
+  trades: () => { loadTrades(); loadDividends(); },
   agent: () => { loadAgentConfig(); },
 };
 document.querySelectorAll('.page-tab').forEach(tab => {

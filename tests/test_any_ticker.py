@@ -127,7 +127,7 @@ class ExtraTickerHttpTest(storage_http.HttpTestBase, unittest.TestCase):
         self.ask(cookie, "TLT 고평가야?")
         req = mock.Mock(session=server._sessions[next(iter(server._sessions))])
         entries = [{"symbol": "TLT", "name": "TLT", "held": True}]
-        for question in ("금이 왜 고점 대비 빠졌어?", "미국 금리가 오르면 금과 나스닥은 어떻게 됨?", "지금 미국 업종별 etf들 상태 어떰?", "이번 주 무엇을 확인해야 해?", "전부 팔면 세금은?"):
+        for question in ("금이 왜 고점 대비 빠졌어?", "미국 금리가 오르면 금과 나스닥은 어떻게 됨?", "지금 미국 업종별 etf들 상태 어떰?", "이번 주 무엇을 확인해야 해?", "섹터 노출 보여줘"):
             self.assertEqual(server.resolve_extra_entries(req, question, entries), [], question)
         self.assertEqual(self.searched, [])
 

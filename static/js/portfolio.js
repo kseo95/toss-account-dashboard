@@ -200,20 +200,22 @@ document.querySelectorAll('.chart-tab').forEach(tab => {
 
 // ---------- 리밸런싱 목표 설정 ----------
 // 카테고리로 안 묶인 종목/예수금은 각각 개별 항목으로 표시되고 목표%는 전부 "기본 목표%"로 고정된다.
-let rebalanceDraft = { targets: [], default_rest_target_pct: 5, krw_target_pct: 50 };
+let rebalanceDraft = { targets: [], default_rest_target_pct: 5, krw_target_pct: 50, cash_target_pct: null };
 
 function setRebalanceDraft(data) {
   rebalanceDraft = {
     targets: (data.targets || []).map(t => ({ ...t, symbols: [...t.symbols] })),
     default_rest_target_pct: data.default_rest_target_pct,
     krw_target_pct: data.krw_target_pct,
+    cash_target_pct: data.cash_target_pct,
   };
   renderRebalancePanel();
 }
 
 function updateRebalanceSum() {
-  const categorySum = rebalanceDraft.targets.reduce((s, t) => s + (parseFloat(t.target_pct) || 0), 0);
-  $('rebalanceSum').textContent = `카테고리 목표% 합계: ${Math.round(categorySum * 10) / 10}% (카테고리에 넣지 않은 종목과 현금은 리밸런싱 계산에서 제외됩니다)`;
+  const cashTarget = $('cashTargetInput').value === '' ? 0 : (parseFloat($('cashTargetInput').value) || 0);
+  const categorySum = rebalanceDraft.targets.reduce((s, t) => s + (parseFloat(t.target_pct) || 0), 0) + cashTarget;
+  $('rebalanceSum').textContent = `카테고리 목표% 합계: ${Math.round(categorySum * 10) / 10}% (현금 목표 포함, 카테고리에 넣지 않은 종목은 계산에서 제외됩니다)`;
   const krwTarget = parseFloat($('krwTargetInput').value) || 0;
   $('usdTargetHint').textContent = `(달러 목표: ${Math.round((100 - krwTarget) * 10) / 10}%)`;
 }
@@ -241,6 +243,7 @@ function renderRebalancePanel() {
   });
   $('restPctInput').value = rebalanceDraft.default_rest_target_pct;
   $('krwTargetInput').value = rebalanceDraft.krw_target_pct;
+  $('cashTargetInput').value = rebalanceDraft.cash_target_pct ?? '';
   updateRebalanceSum();
 }
 
@@ -257,6 +260,7 @@ function saveRebalanceSettings(errId, savedId, btnId) {
       targets: rebalanceDraft.targets,
       default_rest_target_pct: parseFloat($('restPctInput').value) || 0,
       krw_target_pct: parseFloat($('krwTargetInput').value) || 0,
+      cash_target_pct: $('cashTargetInput').value === '' ? null : parseFloat($('cashTargetInput').value) || 0,
     },
     onSuccess: async data => {
       setRebalanceDraft(data);
@@ -267,6 +271,7 @@ function saveRebalanceSettings(errId, savedId, btnId) {
 
 $('restPctInput').addEventListener('input', updateRebalanceSum);
 $('krwTargetInput').addEventListener('input', updateRebalanceSum);
+$('cashTargetInput').addEventListener('input', updateRebalanceSum);
 $('addCategoryBtn').addEventListener('click', () => {
   rebalanceDraft.targets.push({ label: '', symbols: [], target_pct: 0 });
   renderRebalancePanel();

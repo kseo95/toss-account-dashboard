@@ -25,7 +25,7 @@ class ToolSpecTest(unittest.TestCase):
         specs = lm.tool_specs()
         self.assertEqual({s["function"]["name"] for s in specs}, set(TOOL_NAMES))
         self.assertEqual(set(lm.HINTS), set(TOOL_NAMES))                                                 # 새 도구를 만들면 안내도 같이
-        self.assertLess(len(json.dumps(specs, ensure_ascii=False)), 6000)                                # 작은 모델의 문맥을 아낀다
+        self.assertLess(len(json.dumps(specs, ensure_ascii=False)), 7500)                              # 작은 모델의 문맥을 아낀다
         indicators = next(s for s in specs if s["function"]["name"] == "get_indicators")["function"]
         self.assertEqual(indicators["parameters"]["properties"]["indicators"], {"type": "array", "items": {"type": "string"}})
         self.assertEqual(indicators["parameters"]["properties"]["focus"]["description"], "종목 이름·코드")
@@ -46,7 +46,7 @@ class CleanArgsTest(unittest.TestCase):
         got = lm.clean_args("get_valuation", {"focus": "엔비디아"}, "엔비디아 PER 어때?")
         self.assertEqual(got, {"focus": "엔비디아 엔비디아 PER 어때?"})
         self.assertEqual(lm.clean_args("get_valuation", {}, "내 종목 PER")["focus"], "내 종목 PER")           # 모델이 종목을 안 골라도 질문으로 찾는다
-        self.assertNotIn("focus", lm.clean_args("estimate_liquidation_tax", {"focus": "x"}, "q"))          # focus를 받지 않는 도구
+        self.assertNotIn("focus", lm.clean_args("get_sector_exposure", {"focus": "x"}, "q"))          # focus를 받지 않는 도구
         self.assertLessEqual(len(lm.clean_args("get_valuation", {"focus": "가" * 500}, "나" * 500)["focus"]), 200)
 
     def test_arguments_may_arrive_as_a_json_string_and_garbage_is_ignored(self):
@@ -72,7 +72,7 @@ class TextCallTest(unittest.TestCase):
     def test_calls_written_as_text_are_recovered_with_cleaned_arguments(self):
         got = lm.parse_text_calls('get_factor_response(factor="금리", direction="up", assets=["금","나스닥"])', "질문")
         self.assertEqual(got, [{"name": "get_factor_response", "args": {"factor": "금리", "direction": "up", "assets": ["금", "나스닥"]}}])
-        self.assertEqual(lm.parse_text_calls("estimate_liquidation_tax", "q"), [{"name": "estimate_liquidation_tax", "args": {}}])
+        self.assertEqual(lm.parse_text_calls("get_sector_exposure", "q"), [{"name": "get_sector_exposure", "args": {}}])
         self.assertEqual([c["name"] for c in lm.parse_text_calls("get_portfolio_overview, get_weekly_risk_report", "q")], ["get_portfolio_overview", "get_weekly_risk_report"])
         none = lm.parse_text_calls("get_valuation(focus=None)", "내 종목 PER")
         self.assertEqual(none, [{"name": "get_valuation", "args": {"focus": "내 종목 PER"}}])                  # None은 비우고 질문으로 찾는다
@@ -173,19 +173,20 @@ class LocalServerTest(storage_http.HttpTestBase, unittest.TestCase):
         super().setUp()
         lm.reset_status_cache()
         self.addCleanup(lm.reset_status_cache)
-        self.calls = [{"name": "estimate_liquidation_tax", "args": {}}]
+        self.calls = [{"name": "get_sector_exposure", "args": {}}]
         self.final = None
-        self.tax = {"summary": {"estimated_tax_krw": 5000, "capital_gains_tax_krw": 4000, "domestic_transaction_and_etf_tax_krw": 1000}, "warnings": [], "limitations": []}
+        self.sector = {"configured": True, "sectors": [{"label": "반도체", "exposure_krw": 5000, "exposure_pct": 50.0, "holdings": [{"symbol": "AAA", "name": "에이"}]},
+                                                      {"label": "에너지", "exposure_krw": 3000, "exposure_pct": 30.0, "holdings": [{"symbol": "BBB", "name": "비"}]}], "unmapped_count": 0, "limitations": []}
         self.executed = []
 
         def execute(req, name, args=None):
             self.executed.append((name, args))
-            return {"result": self.tax}
+            return {"result": self.sector}
         self.state = {"enabled": True, "reachable": True, "ready": True, "model": "qwen2.5:7b-instruct"}
         for name, value in {"try_local_plan": mock.Mock(side_effect=lambda req, q, h: {"calls": list(self.calls), "messages": [{"role": "user", "content": q}], "assistant": {}} if self.calls else None),
                             "local_follow_up": mock.Mock(side_effect=lambda req, q, plan, calls, results, run: self.final),
                             "local_state": mock.Mock(side_effect=lambda store: dict(self.state)),
-                            "local_summary": mock.Mock(return_value="추정 세금은 5,000원입니다."),
+                            "local_summary": mock.Mock(return_value="반도체 노출은 5,000원입니다."),
                             "execute_agent_tool": mock.Mock(side_effect=execute)}.items():
             p = mock.patch.object(server, name, value)
             p.start()
@@ -199,14 +200,14 @@ class LocalServerTest(storage_http.HttpTestBase, unittest.TestCase):
 
     def test_the_local_models_tool_choice_is_executed_and_summarised(self):
         cookie = self.login("key-a")
-        status, payload, _ = self.ask(cookie, "만약에 다 정리하면 얼마 떼가?")
+        status, payload, _ = self.ask(cookie, "내 투자가 어디에 쏠려 있는지 정리해줘")
         self.assertEqual(status, 200)
         self.assertEqual(payload["mode"], "local_model")
-        self.assertEqual([e["tool"] for e in payload["executions"]], ["estimate_liquidation_tax"])
-        self.assertEqual(self.executed[0][0], "estimate_liquidation_tax")
+        self.assertEqual([e["tool"] for e in payload["executions"]], ["get_sector_exposure"])
+        self.assertEqual(self.executed[0][0], "get_sector_exposure")
         bullets = payload["answer"]["bullets"]
-        self.assertEqual(bullets[0], "요약: 추정 세금은 5,000원입니다.")                                       # 모델 요약이 맨 위
-        self.assertTrue(any("전량 매도 가정 추정 세금은 5,000원" in b for b in bullets))                       # 아래는 도구가 만든 숫자
+        self.assertEqual(bullets[0], "요약: 반도체 노출은 5,000원입니다.")                                       # 모델 요약이 맨 위
+        self.assertTrue(any("반도체: 내 노출 5,000원" in b for b in bullets))                       # 아래는 도구가 만든 숫자
         self.assertTrue(payload["answer"]["charts"])
         self.assertTrue(any("로컬 모델(qwen2.5:7b-instruct)이 질문을 이해해 도구를 골랐습니다" in n for n in payload["answer"]["notes"]))
         self.assertNotIn("teach", payload["answer"])                                                          # 로컬이 골랐으면 가르치기 버튼 없음
@@ -220,15 +221,15 @@ class LocalServerTest(storage_http.HttpTestBase, unittest.TestCase):
     def test_without_a_plan_or_when_disabled_or_unready_the_rule_based_path_runs(self):
         cookie = self.login("key-a")
         self.calls = []
-        payload = self.ask(cookie, "전부 팔면 세금은?")[1]
+        payload = self.ask(cookie, "섹터 노출 보여줘")[1]
         self.assertEqual(payload["mode"], "rule_based_preview")                                               # 모델이 도구를 못 골랐다 → 규칙 기반
-        self.assertEqual(payload["plan"]["tools"], ["estimate_liquidation_tax"])
+        self.assertEqual(payload["plan"]["tools"], ["get_sector_exposure"])
         unknown = self.ask(cookie, "오늘 점심 뭐 먹지")[1]
         self.assertEqual(unknown["answer"]["unknown_kind"], "unclear")                                        # 못 알아들은 질문은 정책 응답
 
     def test_trade_requests_are_refused_even_if_the_model_would_pick_a_tool(self):
         cookie = self.login("key-a")
-        self.calls = [{"name": "estimate_liquidation_tax", "args": {}}]                                       # 모델이 세금 도구를 골라도
+        self.calls = [{"name": "get_sector_exposure", "args": {}}]                                       # 모델이 조회 도구를 골라도
         payload = self.ask(cookie, "엔비디아 지금 당장 전량 매도해줘")[1]
         self.assertEqual(payload["executions"], [])
         self.assertEqual(payload["answer"]["unknown_kind"], "trade")
@@ -237,7 +238,7 @@ class LocalServerTest(storage_http.HttpTestBase, unittest.TestCase):
     def test_a_summary_that_cannot_be_grounded_is_left_out(self):
         cookie = self.login("key-a")
         server.local_summary.return_value = None
-        bullets = self.ask(cookie, "정리하면 세금은")[1]["answer"]["bullets"]
+        bullets = self.ask(cookie, "정리하면 섹터는")[1]["answer"]["bullets"]
         self.assertFalse(any(b.startswith("요약:") for b in bullets))
 
     def test_a_taught_sentence_beats_the_model(self):

@@ -20,11 +20,11 @@ def all_text(answer):
 
 
 class AgentToolsTest(unittest.TestCase):
-    def test_only_eighteen_read_only_tools_are_exposed(self):
+    def test_only_twentyone_read_only_tools_are_exposed(self):
         self.assertEqual({t["name"] for t in TOOL_DEFINITIONS}, {
-            "get_portfolio_overview", "get_weekly_risk_report", "estimate_liquidation_tax", "get_sector_exposure", "get_weekly_news",
+            "get_portfolio_overview", "get_weekly_risk_report", "get_sector_exposure", "get_weekly_news",
             "get_macro_drivers", "get_outlook", "get_etf_breakdown", "get_macro_history", "get_macro_cases", "get_asset_drivers", "get_ma_screen", "get_sector_trends",
-            "get_drawdown_analysis", "get_factor_response", "get_valuation", "get_indicators", "get_my_rules",
+            "get_drawdown_analysis", "get_factor_response", "get_valuation", "get_indicators", "get_my_rules", "get_past_value", "web_search", "read_page", "query_data",
         })
         outlook_tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "get_outlook")                  # 종목 지정 인자만 받는다
         self.assertEqual(list(outlook_tool["input_schema"]["properties"]), ["focus"])
@@ -329,7 +329,7 @@ class AgentToolsTest(unittest.TestCase):
     def test_macro_tool_is_selected_for_cause_questions(self):
         for q in ("TLT 왜 떨어졌어?", "금리 때문에 빠진 거야?", "이번 주 요인 알려줘", "달러 영향 있어?", "이번주 무엇을 확인해야해"):
             self.assertIn("get_macro_drivers", plan_agent_query(q)["tools"], q)
-        self.assertNotIn("get_macro_drivers", plan_agent_query("전부 팔면 세금은?")["tools"])
+        self.assertNotIn("get_macro_drivers", plan_agent_query("섹터 노출 보여줘")["tools"])
         self.assertNotIn("get_macro_drivers", plan_agent_query("위험 신호 점검해줘")["tools"])
 
     def outlook_raw(self):
@@ -396,7 +396,7 @@ class AgentToolsTest(unittest.TestCase):
     def test_outlook_tool_is_selected_for_forward_looking_questions_only(self):
         for q in ("그래서 앞으로의 금 상승/하락 뷰를 하나씩 내봐", "TLT 전망 알려줘", "시나리오 보여줘", "내릴까?", "앞으로 어떻게 될까"):
             self.assertIn("get_outlook", plan_agent_query(q)["tools"], q)
-        for q in ("TLT 왜 떨어졌어?", "이번 주 무엇을 확인해야 해", "전부 팔면 세금은?", "리밸런싱 알려줘"):
+        for q in ("TLT 왜 떨어졌어?", "이번 주 무엇을 확인해야 해", "섹터 노출 보여줘", "리밸런싱 알려줘"):
             self.assertNotIn("get_outlook", plan_agent_query(q)["tools"], q)
 
     def test_no_moves_means_no_list_section(self):
@@ -422,20 +422,6 @@ class AgentToolsTest(unittest.TestCase):
         self.assertIn("계좌 약세", out["rule_based_comments"])
         self.assertTrue(out["limitations"])
 
-    def test_tax_result_marks_estimate_and_incomplete_data(self):
-        raw = {
-            "summary": {"tax_if_sell_all_krw": 300, "gain_tax_if_sell_all_krw": 250,
-                        "domestic_tax_if_sell_all_krw": 50, "deduction_left_krw": 0,
-                        "financial_income_ytd_krw": 100},
-            "rows": [{"symbol": "AAA", "name": "에이", "tax_krw": 300, "notes": ["근사"]}],
-            "realized_source": "auto", "income_source": "manual",
-            "realized_note": "일부만 합산했어요.", "income_note": None,
-        }
-        out = format_tool_result("estimate_liquidation_tax", raw)["result"]
-        self.assertEqual(out["summary"]["estimated_tax_krw"], 300.0)
-        self.assertIn("일부만 합산했어요.", out["warnings"])
-        self.assertIn("추정치", out["limitations"][0])
-
     def test_unknown_tool_is_rejected(self):
         with self.assertRaises(ValueError):
             format_tool_result("place_order", {})
@@ -456,11 +442,12 @@ class AgentToolsTest(unittest.TestCase):
         for q in ("내 종목 소식 알려줘", "왜 떨어졌어?", "관심종목 뉴스", "이번주 무엇을 확인해야해"):
             self.assertIn("get_weekly_news", plan_agent_query(q)["tools"], q)
         self.assertNotIn("get_weekly_news", plan_agent_query("위험 신호 점검해줘")["tools"])
-        self.assertNotIn("get_weekly_news", plan_agent_query("전부 팔면 세금은?")["tools"])
+        self.assertNotIn("get_weekly_news", plan_agent_query("섹터 노출 보여줘")["tools"])
 
-    def test_query_plan_selects_rebalance_and_tax_tools(self):
+    def test_query_plan_selects_rebalance_and_sector_tools(self):
         self.assertEqual(plan_agent_query("리밸런싱 계획 보여줘")["tools"], ["get_portfolio_overview"])
-        self.assertEqual(plan_agent_query("전부 팔면 세금은?")["tools"], ["estimate_liquidation_tax"])
+        self.assertEqual(plan_agent_query("섹터 노출 보여줘")["tools"], ["get_sector_exposure"])
+        self.assertFalse(plan_agent_query("전부 팔면 세금은?")["supported"])                                          # 세금 기능은 없다
 
     def test_unknown_question_returns_supported_examples_without_running_tools(self):
         plan = plan_agent_query("오늘 점심 뭐 먹지?")
@@ -491,7 +478,7 @@ class RuleModeRoutingTest(unittest.TestCase):
         from agent_tools import plan_agent_query as plan
         for q, tool in (("이번주 뭘 확인해야해", "get_weekly_news"), ("UFO 왜 움직였어?", "get_etf_breakdown"), ("UFO 급락했네", "get_macro_drivers"),
                         ("엔비디아 폭락 이유", "get_weekly_news"), ("앞날이 어떨까 향후 전망", "get_outlook"), ("기사 있어?", "get_weekly_news"),
-                        ("오.를.까", "get_outlook"), ("전량 매도하면 세 금", "estimate_liquidation_tax")):
+                        ("오.를.까", "get_outlook"), ("섹 터 노출", "get_sector_exposure")):
             self.assertIn(tool, plan(q)["tools"], q)
 
     def test_plain_chatter_is_not_matched(self):

@@ -61,7 +61,7 @@ class PlanTest(unittest.TestCase):
     def test_past_questions_select_the_history_tool(self):
         for q in ("TLT 과거에는 어땠어?", "비슷한 사례 알려줘", "리먼 쇼크 때 내 종목은", "예전에도 이랬어?"):
             self.assertIn("get_macro_history", plan_agent_query(q)["tools"], q)
-        for q in ("이번 주 점검", "UFO 뉴스", "전부 팔면 세금은?", "금 앞으로의 전망"):
+        for q in ("이번 주 점검", "UFO 뉴스", "섹터 노출 보여줘", "금 앞으로의 전망"):
             self.assertNotIn("get_macro_history", plan_agent_query(q)["tools"], q)
         self.assertIn("get_macro_history", FOCUS_TOOLS)
         for q in ("코로나 때 금은?", "2008년 금융위기 때 금은?"):                              # 사례를 묻는 말에는 사례집이 답하고 통계 도구는 따라붙지 않는다
@@ -182,7 +182,7 @@ class CasesPlanTest(unittest.TestCase):
         for q in ("2008년 금융위기 때 금은?", "지금과 비슷한 과거는?", "볼커 긴축 때 금은 어땠어", "코로나 때 금", "SVB 사태", "닷컴 버블", "사례집 보여줘", "엔캐리 청산 때",
                   "현재 시장상황이 어느 시점이랑 비슷해 보여?", "요즘 장이 언제랑 닮았어?", "지금 시장은 과거 어느 때와 유사해?", "최근 상황이 어떤 국면이랑 똑같아?"):
             self.assertIn("get_macro_cases", plan_agent_query(q)["tools"], q)
-        for q in ("UFO 뉴스", "금 앞으로의 전망", "2026년 금 전망", "전부 팔면 세금은?", "TLT랑 비슷한 종목 알려줘", "비슷한 사례 알려줘", "이 종목이랑 닮은 ETF"):
+        for q in ("UFO 뉴스", "금 앞으로의 전망", "2026년 금 전망", "섹터 노출 보여줘", "TLT랑 비슷한 종목 알려줘", "비슷한 사례 알려줘", "이 종목이랑 닮은 ETF"):
             self.assertNotIn("get_macro_cases", plan_agent_query(q)["tools"], q)
         self.assertEqual(plan_agent_query("TLT랑 비슷한 종목 알려줘")["tools"], [])                       # 종목 추천은 이 도구들의 일이 아니다
         self.assertNotIn("get_macro_history", plan_agent_query("현재 시장상황이 어느 시점이랑 비슷해 보여?")["tools"])   # 통계 도구가 따라붙지 않는다

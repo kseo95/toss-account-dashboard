@@ -57,7 +57,7 @@ class PlanTest(unittest.TestCase):
     def test_etf_questions_select_the_breakdown_tool(self):
         for q in ("UFO 구성 종목 보여줘", "ETF 뭐 담고 있어?", "편입 종목 기여", "UFO 왜 떨어졌어?", "etf 왜 올랐어"):
             self.assertIn("get_etf_breakdown", plan_agent_query(q)["tools"], q)
-        for q in ("전부 팔면 세금은?", "금 앞으로의 전망", "이번 주 무엇을 확인해야 해", "리밸런싱 알려줘"):
+        for q in ("섹터 노출 보여줘", "금 앞으로의 전망", "이번 주 무엇을 확인해야 해", "리밸런싱 알려줘"):
             self.assertNotIn("get_etf_breakdown", plan_agent_query(q)["tools"], q)
 
 

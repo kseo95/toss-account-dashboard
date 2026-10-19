@@ -12,7 +12,7 @@ import unknown_policy as up
 class MatchLimitTest(unittest.TestCase):
     def test_topics_without_a_tool(self):
         cases = {"삼성전자 배당 얼마나 늘었어?": "배당", "엔비디아 스토캐스틱 알려줘": "기술적 보조지표", "테슬라 목표주가 얼마야": "목표주가·애널리스트", "애플 영업이익 추이": "실적·재무제표",
-                 "내 환차손익 알려줘": "환차손익", "공매도 많은 종목": "공매도·옵션·신용", "절세 방법 알려줘": "절세·신고", "내일 코스피 몇퍼 오를까": "가격 예측",
+                 "내 환차손익 알려줘": "환차손익", "공매도 많은 종목": "공매도·옵션·신용", "절세 방법 알려줘": "세금·신고", "내일 코스피 몇퍼 오를까": "가격 예측",
                  "포모로 산 종목 있어?": "매매 심리 진단", "내 투자습관 평가해줘": "매매 심리 진단"}
         for question, topic in cases.items():
             got = up.match_limit(question)
@@ -29,7 +29,7 @@ class MatchLimitTest(unittest.TestCase):
             self.assertEqual(up.match_limit(question)["kind"], "trade", question)
 
     def test_questions_that_have_tools_are_not_limits(self):
-        for question in ("금이 왜 고점 대비 빠졌어?", "엔비디아 PER 어때?", "엔비디아 RSI 과매수야?", "TSLA MACD 골든크로스 났어?", "볼린저밴드 상단 돌파했어?", "이번 주 무엇을 확인해야 해?", "미국 금리가 오르면 금과 나스닥은 어떻게 됨?", "전부 팔면 세금은?", "리밸런싱 계획 보여줘"):
+        for question in ("금이 왜 고점 대비 빠졌어?", "엔비디아 PER 어때?", "엔비디아 RSI 과매수야?", "TSLA MACD 골든크로스 났어?", "볼린저밴드 상단 돌파했어?", "이번 주 무엇을 확인해야 해?", "미국 금리가 오르면 금과 나스닥은 어떻게 됨?", "섹터 노출 보여줘", "리밸런싱 계획 보여줘"):
             self.assertIsNone(up.match_limit(question), question)
 
 
@@ -115,7 +115,7 @@ class UnknownHttpTest(storage_http.HttpTestBase, unittest.TestCase):
 
         class Stub:                                                                                                # 확신(0.30)은 못 하지만 어렴풋이 비슷한 의도 둘
             def scores(self, question):
-                return [("drawdown", 0.22), ("holding", 0.21), ("outlook", 0.15), ("tax", 0.05)]
+                return [("drawdown", 0.22), ("holding", 0.21), ("outlook", 0.15), ("sector", 0.05)]
 
             def classify(self, question, *a, **k):
                 return None
@@ -132,10 +132,15 @@ class UnknownHttpTest(storage_http.HttpTestBase, unittest.TestCase):
     def test_supported_questions_with_a_missing_part_keep_their_answer_and_add_a_note(self):
         cookie = self.login("key-a")
         with mock.patch.object(server, "execute_agent_tool", side_effect=lambda req, name, args=None: {"result": {}}):
-            payload = self.ask(cookie, "전부 팔면 세금은? 절세 방법도 알려줘")[1]
-        self.assertEqual(payload["plan"]["tools"], ["estimate_liquidation_tax"])
+            payload = self.ask(cookie, "섹터 노출 보여줘. 절세 방법도 알려줘")[1]
+        self.assertEqual(payload["plan"]["tools"], ["get_sector_exposure"])
         self.assertNotIn("unknown_kind", payload["answer"])
-        self.assertTrue(any(n.startswith("※ 세금 신고 절차나 절세 전략") for n in payload["answer"]["notes"]))
+        self.assertTrue(any(n.startswith("※ 세금 계산이나 신고·절세는") for n in payload["answer"]["notes"]))
+
+    def test_tax_questions_are_an_unsupported_topic_now(self):
+        for question in ("전부 팔면 세금은?", "양도세 얼마야", "절세 방법 알려줘"):
+            limit = up.match_limit(question)
+            self.assertEqual((limit["topic"], limit["exclusive"]), ("세금·신고", False), question)
 
     def test_an_unresolvable_ticker_in_a_supported_question_is_reported(self):
         cookie = self.login("key-a")
