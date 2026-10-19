@@ -28,6 +28,25 @@ class ComputeRebalanceTest(unittest.TestCase):
         self.assertAlmostEqual(result["현금"]["current_pct"], 30.0)
         self.assertEqual(len(result), 3)
 
+    def test_cash_target_turns_cash_into_a_calculated_category(self):
+        config = {**self.config, "cash_target_pct": 20.0}
+        result = {r["label"]: r for r in portfolio.compute_rebalance(self.rows, 100.0, {"SGOV"}, 1000.0, config)}
+        self.assertEqual((result["현금"]["category"], result["현금"]["target_pct"]), (True, 20.0))
+        self.assertAlmostEqual(result["현금"]["current_pct"], 30.0)
+        plan = portfolio.compute_rebalance_plan(list(result.values()), 1000.0)
+        cash = next(r for r in plan["rows"] if r["label"] == "현금")
+        self.assertEqual((cash["action"], round(cash["difference_krw"])), ("sell", -100))   # 현금 30% → 목표 20%
+        self.assertEqual(plan["excluded"]["cash_pct"], 0)
+
+    def test_cash_target_row_exists_even_without_cash(self):
+        config = {**self.config, "cash_target_pct": 10.0}
+        result = {r["label"]: r for r in portfolio.compute_rebalance(self.rows[:3], 0.0, set(), 700.0, config)}
+        self.assertEqual((result["현금"]["current_pct"], result["현금"]["category"]), (0.0, True))
+
+    def test_without_cash_target_cash_stays_excluded(self):
+        result = {r["label"]: r for r in portfolio.compute_rebalance(self.rows, 100.0, {"SGOV"}, 1000.0, {**self.config, "cash_target_pct": None})}
+        self.assertFalse(result["현금"]["category"])
+
     def test_zero_total_does_not_divide_by_zero(self):
         for r in portfolio.compute_rebalance(self.rows, 0.0, set(), 0.0, self.config):
             self.assertEqual(r["current_pct"], 0.0)

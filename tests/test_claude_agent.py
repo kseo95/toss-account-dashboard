@@ -313,10 +313,9 @@ class AgentConfigHttpTest(storage_http.HttpTestBase, unittest.TestCase):
         self.assertEqual((args[0], args[1], args[2]), ("sk-ant-secret", "claude-opus-5-5", "질문"))
         # 키를 지우면 Claude를 부르지 않고 규칙 기반으로 답한다
         self.request("POST", "/api/agent/config", {"clear_key": True}, cookie=cookie)
-        tax_tool = {"tool": "estimate_liquidation_tax", "read_only": True,
-                    "result": {"summary": {"estimated_tax_krw": 10, "capital_gains_tax_krw": 5, "domestic_transaction_and_etf_tax_krw": 5}}}
-        with mock.patch.object(server, "run_claude_agent") as agent, mock.patch.object(server, "execute_agent_tool", return_value=tax_tool):
-            status, payload, _ = self.request("POST", "/api/agent/query", {"question": "다 팔면 세금 얼마야?"}, cookie=cookie)
+        sector_tool = {"tool": "get_sector_exposure", "read_only": True, "result": {"configured": True, "sectors": [{"label": "반도체", "exposure_krw": 5000, "exposure_pct": 50.0, "holdings": [{"symbol": "AAA", "name": "에이"}]}], "unmapped_count": 0, "limitations": []}}
+        with mock.patch.object(server, "run_claude_agent") as agent, mock.patch.object(server, "execute_agent_tool", return_value=sector_tool):
+            status, payload, _ = self.request("POST", "/api/agent/query", {"question": "섹터 노출 보여줘"}, cookie=cookie)
         self.assertEqual((status, payload["mode"]), (200, "rule_based_preview"))
         agent.assert_not_called()
 

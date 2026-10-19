@@ -34,8 +34,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 from agent_loop import follow_ups, observations
-from agent_tools import (DRAWDOWN_WORDS, INDICATOR_WORDS, FOCUS_TOOLS, INTENT_LABELS, INTENT_WORDS, VALUATION_WORDS, TEACHABLE_INTENTS, TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
-                         parse_indicator_query, parse_response_query, parse_screen_query, parse_trend_query, plan_agent_query, plan_for_holding, plan_for_intent, plan_intent_name, suggest_questions)
+from agent_tools import (DECISION_NOTICE, DRAWDOWN_WORDS, INDICATOR_WORDS, FOCUS_TOOLS, INTENT_LABELS, INTENT_WORDS, VALUATION_WORDS, TEACHABLE_INTENTS, TOOL_DEFINITIONS, TOOL_NAMES, compose_agent_answer, format_tool_result,
+                         is_decision_query, parse_indicator_query, parse_response_query, parse_screen_query, parse_trend_query, plan_agent_query, plan_for_holding, plan_for_intent, plan_intent_name, suggest_questions)
 from intent_examples import DEFAULT_EXAMPLES
 from intent_matcher import MIN_CONTENT, IntentMatcher, normalize as normalize_question
 from common import ApiError, normalize_symbols, parallel_map, to_float
@@ -50,6 +50,22 @@ from indicators import INDICATORS, analyze as analyze_indicators
 from fundamentals import (INFO_CACHE_TTL, assess_etf, assess_stock, fetch_info as fetch_fundamentals, is_korean as is_korean_stock, peer_stats, sample_peers)
 from response import (DEFAULT_ASSETS as DEFAULT_RESPONSE_ASSETS, DEFAULT_HORIZON as DEFAULT_RESPONSE_HORIZON, HORIZONS as RESPONSE_HORIZONS, MAX_ASSETS as MAX_RESPONSE_ASSETS,
                       analyze as analyze_response, resolve_asset, resolve_factor)
+import local_model
+from history_calc import add_months, past_value
+import web_lookup
+from data_query import DIVIDEND_FIELDS, FILL_FIELDS, build_assets, run_query
+import views
+from views.drawdown import drawdown_view
+from views.indicators import indicators_view
+from views.macro import asset_drivers_view, factor_response_view, macro_cases_view, macro_drivers_view, macro_history_view, weekly_news_view
+from views.outlook import etf_breakdown_view, outlook_view
+from views.past import past_value_view
+from views.query import query_data_view
+from views.rules import my_rules_view
+from views.trend import ma_screen_view, trend_view
+from views.valuation import valuation_view
+
+views.bind(sys.modules[__name__])  # views가 server의 이름을 호출할 때 찾아 쓴다(바꿔 끼운 이름도 그대로 먹는다)
 from unknown_policy import NO_FEATURE as NO_FEATURE_TOPICS, match_limit, respond as respond_unknown
 from symbols import candidate_tokens, choose as choose_symbol
 from drawdown import RISK_SYMBOLS, day_movers, search_term, worst_days
@@ -67,8 +83,6 @@ from portfolio import (CASH_SYMBOLS_MAX, allocate_trade_shares, apply_entry_scal
 from sectors import (compute_exposure, holding_market, index_is_fresh, index_progress, load_sector_index, load_sector_map,
                      new_index, run_scan, save_sector_index, save_sector_map, suggest_sectors, validate_sector_map)
 from storage import UserStore, migrate_legacy_files, store_for, store_for_user, user_id_for_accounts
-from tax import (DEFAULT_TAX_SETTINGS, DOMESTIC_CLASSES, TAX_REFERENCE, estimate_taxes, load_tax_settings,
-                 normalize_tax_settings, save_tax_settings, sell_tax_rate_by_symbol)
 from strategy import (apply_strategy_sizing, compute_strategy_rows, effective_assignments, load_strategy_state,
                       load_strategy_templates, save_strategy_state, save_strategy_templates, validate_strategy_templates)
 from toss_api import (fetch_account_snapshot, get_access_token, get_accounts, get_closed_orders, get_sector_members,
@@ -227,7 +241,7 @@ def ensure_symbols_exist(session: dict, symbols: list[str]) -> None:
 
 
 def kr_stock_info(session: dict, holdings: dict) -> dict[str, dict]:
-    """국내 보유종목의 시장 구분(KOSPI/KOSDAQ 등). 세금·주간 리포트가 쓴다."""
+    """국내 보유종목의 시장 구분(KOSPI/KOSDAQ 등). 주간 리포트가 쓴다."""
     kr = [r["심볼"] for r in holdings["stocks"] + holdings["cash"]["stocks"] if r["통화"] == "KRW"]
     return call_with_reauth(session, lambda token: lookup_stocks(token, kr)) if kr else {}
 
@@ -341,9 +355,10 @@ def post_rebalance_config(req: Request):
         raise ApiError(400, error)
     rest_pct = percent_field(req.body, "default_rest_target_pct", "미분류 종목 기본 목표%")
     krw_pct = percent_field(req.body, "krw_target_pct", "목표 원화 비중%")
+    cash_pct = None if req.body.get("cash_target_pct") in (None, "") else percent_field(req.body, "cash_target_pct", "목표 현금 비중%")
     ensure_symbols_exist(req.session, sorted({s for t in targets for s in t["symbols"]}))
-    save_rebalance_config(req.store, targets, rest_pct, krw_pct)
-    return {"ok": True, "targets": targets, "default_rest_target_pct": rest_pct, "krw_target_pct": krw_pct}
+    save_rebalance_config(req.store, targets, rest_pct, krw_pct, cash_pct)
+    return {"ok": True, "targets": targets, "default_rest_target_pct": rest_pct, "krw_target_pct": krw_pct, "cash_target_pct": cash_pct}
 
 
 # ---- 섹터 매핑 ----
@@ -519,43 +534,12 @@ def get_strategy(req: Request):
     total_krw = None
     if data["position_pct"]:  # 금액 계산에 총자산이 필요할 때만
         holdings = build_holdings(snapshot, store)
-        taxes = estimate_taxes(holdings, load_tax_settings(store), kr_stock_info(req.session, holdings))
-        apply_strategy_sizing(rows, data["position_pct"], holdings, sell_tax_rate_by_symbol(taxes))
+        apply_strategy_sizing(rows, data["position_pct"], holdings)
         total_krw = holdings["totals"]["eval_krw"]
     return {"rows": rows, "auto_assigned": auto, "total_krw": total_krw}
 
 
-# ---- 세금 ----
-@route("GET", "/api/tax")
-def get_tax(req: Request):
-    settings = load_tax_settings(req.store)
-    holdings = build_holdings(account_snapshot(req.session), req.store)
-    used = dict(settings)
-    realized_source, realized_note = "manual", None
-    if not settings["use_manual_realized"]:
-        try:
-            realized = realized_overseas(req.session, datetime.now(ZoneInfo("Asia/Seoul")).year)
-            used["realized_overseas_gain_ytd_krw"] = realized["total_gain_krw"]
-            realized_source = "auto"
-            if not realized["complete"]:
-                realized_note = "매입 기록이나 환율이 없는 매도가 있어 일부만 합산했어요. 체결 내역 카드를 확인하세요."
-        except (requests.RequestException, ValueError, KeyError) as e:
-            print(f"[/api/tax] 실현 손익 자동 계산 실패, 입력값 사용: {e}", file=sys.stderr)
-            realized_note = "체결 내역을 불러오지 못해 직접 입력한 값을 썼어요."
-    income_source, income_note = "manual", None
-    if not settings["use_manual_financial_income"]:
-        try:
-            used["financial_income_ytd_krw"] = dividends_for_year(req.session, datetime.now(ZoneInfo("Asia/Seoul")).year)["total_gross_krw"]
-            income_source = "auto"
-        except (requests.RequestException, ValueError, KeyError) as e:
-            print(f"[/api/tax] 배당 추정 실패, 입력값 사용: {e}", file=sys.stderr)
-            income_note = "배당을 추정하지 못해 직접 입력한 값을 썼어요."
-    return {"settings": settings, "default": DEFAULT_TAX_SETTINGS, "classes": DOMESTIC_CLASSES, "reference": TAX_REFERENCE,
-            "realized_source": realized_source, "realized_note": realized_note,
-            "income_source": income_source, "income_note": income_note,
-            **estimate_taxes(holdings, used, kr_stock_info(req.session, holdings))}
-
-
+# ---- 거래 ----
 @route("GET", "/api/trades")
 def get_trades(req: Request):
     """올해(또는 ?year=) 체결 내역. 계좌가 여러 개면 전부 합친다."""
@@ -593,16 +577,6 @@ def get_dividends(req: Request):
         return dividends_for_year(req.session, year)
     except (ValueError, KeyError):
         raise ApiError(502, "환율 기록을 받지 못해 배당을 추정하지 못했습니다.")
-
-
-@route("POST", "/api/tax-settings")
-def post_tax_settings(req: Request):
-    try:
-        settings = normalize_tax_settings(req.body.get("settings"))
-    except ValueError as e:
-        raise ApiError(400, str(e))
-    save_tax_settings(req.store, settings)
-    return {"ok": True, "settings": settings}
 
 
 # ---- 주간 리포트 ----
@@ -688,6 +662,7 @@ def get_agent_config(req: Request):
     return {
         "configured": bool(req.session.get("anthropic_api_key")),
         "model": req.session.get("agent_model", DEFAULT_AGENT_MODEL),
+        "local": local_state(req.store),
         **fred_status(req.session),
     }
 
@@ -811,54 +786,16 @@ def yahoo_closes(symbol: str, years: int | None = None) -> dict | None:
         return None
 
 
-def macro_drivers_view(req: Request, args: dict | None = None) -> dict:
-    """이번 주 시장 요인(금리·달러·유가·VIX·환율·지수) 변화와, 보유·관심 종목 등락의 요인별 기여 추정. 읽기 전용.
-    같이 움직인 정도의 통계 추정이며 인과의 증명이 아니다(설명력 R²를 함께 돌려준다). args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-    symbols = [f[0] for f in FACTORS] + [e["yahoo"] for e in entries if e["yahoo"]]
-    closes = dict(zip(symbols, parallel_map(yahoo_closes, symbols, FACTOR_WORKERS)))
-    factor_series = {f[0]: closes[f[0]] for f in FACTORS if closes.get(f[0])}
-    factor_series.update(fred_factor_series(req.session))
-    items = []
-    for e in entries:
-        series = closes.get(e["yahoo"]) if e["yahoo"] else None
-        result = explain_asset(series, factors_for(e["yahoo"], factor_series)) if series else {"status": "no_data", "asset_change_pct": None}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": result["status"],
-                      "weekly_change_pct": result.get("asset_change_pct"), "r2": result.get("r2"),
-                      "drivers": result.get("contributions", []), "residual_pct": result.get("residual_pct")})
-    items.sort(key=lambda x: (x["weekly_change_pct"] is None, -abs(x["weekly_change_pct"] or 0), not x["held"]))
-    return {"factors": weekly_factor_moves(factor_series), "items": items, "omitted": omitted, "focus": focus, "focused": focused}
+RULES_BAND_PCT = 3.0            # 목표 비중과 이만큼(%p) 안으로 가까우면 '목표 근처'
+_MA_LABEL = re.compile(r"MA(\d+)([주일])\s*([+-]?\d+(?:\.\d+)?)%")
+
+
+PAST_MAX_MONTHS = 60
+PAST_DEFAULT_MONTHS = 12
 
 
 INDICATOR_YEARS = 3            # 200일 이동평균 교차까지 계산하려고 받는 시세 기간
 INDICATOR_MAX = 4
-
-
-def indicators_view(req: Request, args: dict | None = None) -> dict:
-    """RSI·MACD·볼린저밴드·이동평균(50/200일) 교차와 상태, 그래프용 최근 120거래일 시계열. 보유·관심종목이 아니어도 이름·코드로 찾는다(최대 4개). 읽기 전용.
-    args: focus(종목), indicators(["rsi","macd","bollinger","ma_cross"] 중 일부, 비우면 전부), rsi_period·overbought·oversold·bb_period·bb_k(기준 바꾸기, 범위 안의 값만)."""
-    args = args if isinstance(args, dict) else {}
-    focus = str(args.get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-    entries = [e for e in entries if e["yahoo"]]
-    omitted += max(0, len(entries) - INDICATOR_MAX)
-    entries = entries[:INDICATOR_MAX]
-    closes = parallel_map(lambda e: yahoo_closes(e["yahoo"], INDICATOR_YEARS), entries, FACTOR_WORKERS)
-    wanted = [k for k in (args.get("indicators") or []) if k in INDICATORS] or list(INDICATORS)
-    items = []
-    for e, c in zip(entries, closes):
-        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": "no_data"}
-        if c:
-            dates = sorted(c)
-            got = analyze_indicators(dates, [c[d] for d in dates], args)
-            if got:
-                item.update(got)
-                item["status"] = "ok"
-        items.append(item)
-    return {"items": items, "omitted": omitted, "focus": focus, "focused": focused, "indicators": wanted}
 
 
 VALUATION_MAX = 4              # 한 번에 밸류에이션을 보는 종목 수
@@ -889,73 +826,8 @@ def sector_peer_stats(sector: str, exclude: str) -> tuple[dict | None, int]:
     return (stats or None), len(peers)
 
 
-def valuation_view(req: Request, args: dict | None = None) -> dict:
-    """보유·관심 종목의 PER·PSR·PBR·EPS·BPS·ROE와 비싼가·싼가 판단(개별주는 같은 업종 S&P500 표본·성장·수익성 대비, 주식형 ETF는 시장 대비). 읽기 전용.
-    야후 비공식 데이터이며 상대 평가다. 조회어에는 종목 코드만 쓴다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 4개)."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-    entries = [e for e in entries if e["yahoo"]]
-    omitted += max(0, len(entries) - VALUATION_MAX)
-    entries = entries[:VALUATION_MAX]
-    got = parallel_map(lambda e: fetch_fundamentals(e["yahoo"]), entries, VALUATION_WORKERS)
-    bench = None
-    if any(g["status"] == "ok" and g["metrics"]["kind"] == "etf" for g in got):
-        b = fetch_fundamentals(VALUATION_BENCHMARK)
-        bench = b["metrics"] if b["status"] == "ok" else None
-    items = []
-    for e, g in zip(entries, got):
-        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": g["status"]}
-        if g["status"] != "ok":
-            items.append(item)
-            continue
-        m = g["metrics"]
-        peer_n = 0
-        if m["kind"] == "stock":
-            stats = None
-            if m["sector"] and not is_korean_stock(e["yahoo"], m.get("currency")):
-                stats, peer_n = sector_peer_stats(m["sector"], e["yahoo"])
-            assessment = assess_stock(m, stats)
-        elif m["kind"] == "etf":
-            assessment = assess_etf(m, bench)
-        else:
-            assessment = {"signals": [], "verdict": {"label": "na", "expensive": 0, "cheap": 0, "signals": 0}, "reason": "other", "notes": ["주식·ETF가 아닌 종목은 밸류에이션 대상이 아닙니다"]}
-        item.update({"kind": m["kind"], "metrics": {k: m[k] for k in ("per", "forward_per", "psr", "pbr", "eps", "forward_eps", "bps", "roe", "peg", "price", "currency", "category", "sector", "flags")},
-                     "assessment": assessment, "peer_n": peer_n})
-        items.append(item)
-    return {"items": items, "omitted": omitted, "focus": focus, "focused": focused}
-
-
 VALUATION_BENCHMARK = "SPY"        # ETF의 PER·PBR을 견주는 시장 기준(S&P500 ETF)
 RESPONSE_YEARS = 30
-
-
-def factor_response_view(req: Request, args: dict | None = None) -> dict:
-    """요인(금리·달러·유가·VIX·환율·구리)이 크게 오른/내린 구간에서 주요 자산이 평소와 어떻게 달랐는지(조건부 반응). 보유 종목과 무관한 시장 통계, 읽기 전용.
-    args: factor(이름이나 심볼), direction("up"|"down"), assets(이름 목록, 비우면 금·나스닥·S&P500·코스피·장기채·비트코인), horizon_days(5|21|63)."""
-    args = args if isinstance(args, dict) else {}
-    found = resolve_factor(str(args.get("factor") or ""))
-    if found is None:
-        raise ApiError(400, "요인을 알 수 없습니다. 금리·달러·유가·VIX·환율·구리 중 하나를 말해 주세요.")
-    symbol, label, kind = found
-    names = [str(a) for a in (args.get("assets") or []) if isinstance(a, str)][:MAX_RESPONSE_ASSETS]
-    chosen, unresolved = [], []
-    for name in names:
-        hit = resolve_asset(name)
-        if hit is None:
-            unresolved.append(name[:30])
-        elif hit[0] != symbol and hit not in chosen:
-            chosen.append(hit)
-    chosen = chosen or [a for a in DEFAULT_RESPONSE_ASSETS if a[0] != symbol]
-    wanted = [symbol] + [a[0] for a in chosen]
-    closes = dict(zip(wanted, parallel_map(lambda s: yahoo_closes(s, RESPONSE_YEARS), wanted, FACTOR_WORKERS)))
-    if not closes.get(symbol):
-        raise ApiError(502, f"{label} 시세를 받지 못했습니다.")
-    horizon = args.get("horizon_days") if args.get("horizon_days") in RESPONSE_HORIZONS else DEFAULT_RESPONSE_HORIZON
-    out = analyze_response(closes[symbol], kind, {name: closes[sym] for sym, name in chosen if closes.get(sym)}, horizon)
-    out["insufficient"] += [name for sym, name in chosen if not closes.get(sym)]
-    out.update({"factor": {"symbol": symbol, "name": label, "kind": kind}, "direction": "down" if args.get("direction") == "down" else "up", "unresolved": unresolved})
-    return out
 
 
 DRAWDOWN_YEARS = 30          # 전 고점(상장 이후 최고 종가)을 구하려고 종목 시세를 길게 받는다
@@ -992,60 +864,6 @@ def price_series(series: dict, peak_date, key_days: list, limit: int = 120) -> d
     keep = set(dates[::step]) | {dates[0], dates[-1], peak_date} | set(key_days)
     chosen = [d for d in dates if d in keep]
     return {"dates": [d.isoformat() for d in chosen], "closes": [round(series[d], 2) for d in chosen]}
-
-
-def drawdown_view(req: Request, args: dict | None = None) -> dict:
-    """고점 대비 얼마나 빠졌고 왜 빠졌나: 종목의 전 고점(상장 이후)과 최근 1년 고점 대비 낙폭, 최근 고점 날짜부터 지금까지 같은 구간에서
-    시장 요인(금리·달러·유가·VIX·환율·지수)이 얼마나 움직였는지와 종목 하락의 요인별 기여 추정(최근 1년 일간 관계의 계수 × 구간 요인 변화). 읽기 전용.
-    같이 움직인 정도의 통계 추정이며 인과의 증명이 아니다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 4개)."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-    entries = [e for e in entries if e["yahoo"]]
-    omitted += max(0, len(entries) - DRAWDOWN_MAX)
-    entries = entries[:DRAWDOWN_MAX]
-    wanted = list(dict.fromkeys([f[0] for f in FACTORS] + [e["yahoo"] for e in entries]))
-    closes = dict(zip(wanted, parallel_map(lambda sym: yahoo_closes(sym, DRAWDOWN_YEARS if sym in {e["yahoo"] for e in entries} else None), wanted, FACTOR_WORKERS)))
-    factor_series = {f[0]: closes[f[0]] for f in FACTORS if closes.get(f[0])}
-    factor_series.update(fred_factor_series(req.session))
-    items = []
-    for e in entries:
-        series = closes.get(e["yahoo"])
-        item = {"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "status": "no_data"}
-        if series and len(series) > 2:
-            dates = sorted(series)
-            last = dates[-1]
-            ath_date = max(dates, key=lambda d: series[d])
-            recent = dates[-DRAWDOWN_WINDOW_DAYS:]
-            peak_date = max(recent, key=lambda d: series[d])
-            since_days = len([d for d in dates if d > peak_date])
-            low_date = min((d for d in dates if d >= peak_date), key=lambda d: series[d])
-            item.update({"last_date": last.isoformat(), "last_close": series[last], "peak_date": peak_date.isoformat(), "peak_close": series[peak_date],
-                         "drawdown_pct": (series[last] / series[peak_date] - 1) * 100, "since_days": since_days,
-                         "ath_date": ath_date.isoformat(), "ath_close": series[ath_date], "ath_drawdown_pct": (series[last] / series[ath_date] - 1) * 100,
-                         "low_date": low_date.isoformat(), "low_drawdown_pct": (series[low_date] / series[peak_date] - 1) * 100})
-            if since_days < DRAWDOWN_MIN_DAYS or series[last] >= series[peak_date]:
-                item["status"] = "near_peak"
-            else:
-                factors = factors_for(e["yahoo"], factor_series)
-                macro_only = {k: v for k, v in factors.items() if factor_group(k) == "macro"}    # 먼저 매크로 요인(금리·달러·유가·VIX…)만으로: 은·지수 같은 같은 계열 자산이 설명을 가로채지 않게
-                result, basis = explain_asset(series, macro_only, since=peak_date), "macro"
-                if result["status"] != "ok":                                                    # 매크로만으로 설명이 안 되면 시장 전체(지수·업종·귀금속 등)까지 넣어 본다
-                    wider = explain_asset(series, factors, since=peak_date)
-                    if wider["status"] == "ok":
-                        result, basis = wider, "market"
-                moves = [{**m, "group": factor_group(m["symbol"])} for m in weekly_factor_moves(factors, since=peak_date)]
-                item["drop_days"] = big_drop_days(e, series, peak_date, factors)
-                item["causes"] = rank_themes(item["drop_days"])
-                item["series"] = price_series(series, peak_date, [date.fromisoformat(d["date"]) for d in item["drop_days"]])
-                for day in item["drop_days"]:
-                    day.pop("pool", None)
-                pressure = window_pressure(series, macro_only, peak_date)                       # 회귀에 안 잡힌 요인도 평소 관계로 한 번 더 본다(매크로 요인만)
-                item.update({"pressure": pressure[:6],
-                             "status": result["status"], "reason": result.get("reason", ""), "r2": result.get("r2"), "oos_r2": result.get("oos_r2"), "basis": basis,
-                             "drivers": result.get("contributions", []), "residual_pct": result.get("residual_pct"), "moves": moves})
-        items.append(item)
-    return {"items": items, "omitted": omitted, "focus": focus, "focused": focused}
 
 
 OUTLOOK_HISTORY_YEARS = 30   # 종목 자신의 일봉(상장 이후, 최대 30년). 더 긴 대용 시세는 long_history가 따로 알려 준다
@@ -1183,184 +1001,20 @@ def focus_info(req: Request, question: str) -> dict:
     return {"found": found, "names": [e["name"] for e in entries[:4]], "unknown": unknown[:3], "extra_names": [e["name"] for e in extras]}
 
 
-def outlook_view(req: Request, args: dict | None = None) -> dict:
-    """종목별 앞으로의 상승/하락 뷰 재료(과거 유사 국면 통계 + 요인 민감도 + 변동성 범위). 읽기 전용, 예측이 아니다.
-    args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 12개), 없으면 보유·관심 종목 전체."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    categories = load_rebalance_config(req.store)["targets"]
-    entries, focused = focus_with_extras(req, entries, categories, focus)
-    omitted += max(0, len(entries) - OUTLOOK_MAX_SYMBOLS)
-    entries = entries[:OUTLOOK_MAX_SYMBOLS]
-    asset_symbols = [e["yahoo"] for e in entries if e["yahoo"]]
-    factor_symbols = [f[0] for f in FACTORS]
-    long_closes = dict(zip(asset_symbols, parallel_map(lambda s: yahoo_closes(s, OUTLOOK_HISTORY_YEARS), asset_symbols, 4)))
-    factor_closes = dict(zip(factor_symbols, parallel_map(yahoo_closes, factor_symbols, FACTOR_WORKERS)))
-    factor_series = {s: c for s, c in factor_closes.items() if c}
-    factor_series.update(fred_factor_series(req.session))
-    sources = {e["yahoo"]: long_source_for(e["yahoo"]) for e in entries if e["yahoo"]}     # 상장이 최근인 종목은 더 긴 대용 시세로 과거를 센다
-    proxy_symbols = sorted({s["symbol"] for s in sources.values() if s and s["kind"] == "daily"})
-    proxy_closes = dict(zip(proxy_symbols, parallel_map(lambda s: yahoo_closes(s, LONG_PROXY_YEARS), proxy_symbols, 4)))
-    gold = None
-    if any(s and s["kind"] == "monthly_gold" for s in sources.values()):
-        try:
-            gold = fetch_gold_monthly()
-        except (requests.RequestException, ValueError):
-            gold = None
-    items = []
-    for e in entries:
-        series = long_closes.get(e["yahoo"]) if e["yahoo"] else None
-        source = sources.get(e["yahoo"]) if e["yahoo"] else None
-        long_series = long_error = None
-        if source and source["kind"] == "monthly_gold":
-            long_series, long_error = ({"kind": "monthly", "series": gold, "label": source["label"]} if gold else None), source["label"]
-        elif source:
-            closes = proxy_closes.get(source["symbol"])
-            long_series, long_error = ({"kind": "daily", "series": closes, "label": source["label"]} if closes else None), source["label"]
-        result = build_outlook(series, factors_for(e["yahoo"], factor_series), long_series, long_error) if series else {"status": "no_data", "history_days": 0}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), **result})
-    return {"items": items, "focus": focus, "focused": focused, "omitted": omitted}
-
-
 ETF_MAX_BREAKDOWNS = 6        # 한 번에 구성 종목을 분해하는 ETF 수(질문에서 지정하지 않았을 때)
 ETF_TOP_CONTRIBUTORS = 3      # ETF마다 요인을 다시 분석하는 큰 기여 종목 수
 ETF_NEWS_PER_ETF = 2          # ETF마다 보도를 찾는 큰 기여 종목 수
 ETF_NEWS_MAX_SYMBOLS = 8
 
 
-def etf_breakdown_view(req: Request, args: dict | None = None) -> dict:
-    """보유·관심 ETF의 이번 주 등락을 상위 편입 종목의 기여로 나누고, 큰 기여 종목은 매크로 요인과 보도까지 붙인다. 읽기 전용.
-    args["focus"]가 있으면 그 종목·카테고리의 ETF만. 편입 정보가 없는 종목(개별주·금/채권 ETF·한국 ETF 등)은 no_holdings로 알린다.
-    야후 조회어에는 종목 코드만, 뉴스 조회어에는 이름·코드만 쓰고 수량·금액·계좌 정보는 보내지 않는다."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    categories = load_rebalance_config(req.store)["targets"]
-    entries, focused = focus_with_extras(req, entries, categories, focus)
-    entries = [e for e in entries if e["yahoo"]]
-    holdings = dict(zip((e["symbol"] for e in entries), parallel_map(lambda e: fetch_top_holdings(e["yahoo"]), entries, 4)))
-    etfs = [e for e in entries if holdings[e["symbol"]]["status"] == "ok"]
-    no_holdings = [{"symbol": e["symbol"], "name": e["name"], "reason": holdings[e["symbol"]]["status"]}
-                   for e in entries if holdings[e["symbol"]]["status"] != "ok"]
-    omitted += max(0, len(etfs) - ETF_MAX_BREAKDOWNS)
-    etfs = etfs[:ETF_MAX_BREAKDOWNS]
-    constituents = sorted({h["symbol"] for e in etfs for h in holdings[e["symbol"]]["holdings"]})
-    own_symbols = [e["yahoo"] for e in etfs]
-    fetch_list = list(dict.fromkeys(own_symbols + constituents))
-    closes = dict(zip(fetch_list, parallel_map(yahoo_closes, fetch_list, 6)))
-    items = []
-    for e in etfs:
-        series = closes.get(e["yahoo"])
-        result = etf_breakdown(series, holdings[e["symbol"]]["holdings"], {s: c for s, c in closes.items() if c}) if series else {"status": "no_data"}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), **result, "drivers": {}, "headlines": {}})
-    leaders = {i["symbol"]: [r for r in i.get("rows", []) if r["contribution_pct"] is not None][:ETF_TOP_CONTRIBUTORS]
-               for i in items if i["status"] == "ok"}
-    if any(leaders.values()):   # 큰 기여 종목의 요인 분석(기존 매크로 회귀)과 보도
-        factor_closes = dict(zip((f[0] for f in FACTORS), parallel_map(yahoo_closes, [f[0] for f in FACTORS], FACTOR_WORKERS)))
-        factor_series = {s: c for s, c in factor_closes.items() if c}
-        factor_series.update(fred_factor_series(req.session))
-        news_targets, seen = [], set()
-        for item in items:
-            for row in leaders.get(item["symbol"], []):
-                explained = explain_asset(closes[row["symbol"]], factors_for(row["symbol"], factor_series)) if closes.get(row["symbol"]) else {"status": "no_data"}
-                item["drivers"][row["symbol"]] = {"status": explained["status"], "r2": explained.get("r2"),
-                                                  "contributions": explained.get("contributions", [])[:2]}
-            for row in leaders.get(item["symbol"], [])[:ETF_NEWS_PER_ETF]:
-                if row["symbol"] not in seen and len(news_targets) < ETF_NEWS_MAX_SYMBOLS:
-                    seen.add(row["symbol"])
-                    news_targets.append({"symbol": row["symbol"], "name": row["name"], "use_yahoo": True})
-        found = headlines_for_many(news_targets) if news_targets else {}
-        for item in items:
-            for row in leaders.get(item["symbol"], [])[:ETF_NEWS_PER_ETF]:
-                if row["symbol"] in found:
-                    item["headlines"][row["symbol"]] = found[row["symbol"]]
-    return {"items": items, "no_holdings": no_holdings, "focus": focus, "focused": focused, "omitted": omitted}
-
-
 MACRO_HISTORY_MAX = 6   # 한 번에 과거 충격 반응을 보는 종목 수(요인 14개와 종목별 긴 일봉을 받으므로 제한한다)
-
-
-def macro_history_view(req: Request, args: dict | None = None) -> dict:
-    """지금 큰 변동 중인 매크로 요인과, 과거 같은 방향의 큰 변동 때·이름 붙은 거시 이슈 때 보유·관심 종목이 어떻게 움직였는지. 읽기 전용.
-    같이 움직인 기록이며 원인의 증명이 아니다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 6개).
-    금 ETF·주요 지수 ETF는 더 긴 대용 일봉(금 선물·지수)으로 본다."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-    entries = [e for e in entries if e["yahoo"]]
-    omitted += max(0, len(entries) - MACRO_HISTORY_MAX)
-    entries = entries[:MACRO_HISTORY_MAX]
-    sources = {e["yahoo"]: event_source_for(e["yahoo"]) for e in entries}
-    wanted = list(dict.fromkeys([f[0] for f in FACTORS] + [e["yahoo"] for e in entries] + [s["symbol"] for s in sources.values() if s]))
-    closes = dict(zip(wanted, parallel_map(lambda s: yahoo_closes(s, LONG_PROXY_YEARS), wanted, FACTOR_WORKERS)))
-    factor_series = {f[0]: closes[f[0]] for f in FACTORS if closes.get(f[0])}
-    factor_series.update(fred_factor_series(req.session))
-    items = []
-    for e in entries:
-        own, source = closes.get(e["yahoo"]), sources.get(e["yahoo"])
-        proxy = closes.get(source["symbol"]) if source else None
-        used, label = (proxy, source["label"]) if proxy and (not own or len(proxy) > len(own)) else (own, None)
-        result = analyze_shocks(used, factors_for(e["yahoo"], factor_series)) if used else {"status": "no_data", "history_days": 0}   # 요인을 못 받아도 이름 붙은 이슈 반응은 계산한다
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "source": label, **result})
-    return {"items": items, "focus": focus, "focused": focused, "omitted": omitted}
 
 
 CASES_REFERENCE_SYMBOLS = {"tnx": "^TNX", "irx": "^IRX", "dxy": "DX-Y.NYB", "spx": "^GSPC", "vix": "^VIX", "oil": "CL=F", "xlf": "XLF"}
 
 
-def macro_cases_view(req: Request, args: dict | None = None) -> dict:
-    """거시 사례집: 질문이 지정한 사례(국면별 서사 + 실제 시세로 계산한 금·금리·달러·증시 변화 + 통념 점검)와 지금과 닮은 과거 국면. 읽기 전용.
-    args["case"]에 사례 이름·연도·사건 키워드가 있으면 그 사례들(최대 3개), args["focus"]에 종목이 있으면 그 종목의 국면별 변화와 그 뒤 3개월도 함께.
-    FRED 키가 있으면 연방기금금리·실질금리·기대인플레이션도 쓴다. 같이 움직인 기록이며 인과의 증명이 아니다."""
-    case_text = str((args or {}).get("case") or "").strip()[:300]
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    symbols = list(CASES_REFERENCE_SYMBOLS.values()) + ["GC=F"]
-    closes = dict(zip(symbols, parallel_map(lambda s: yahoo_closes(s, LONG_PROXY_YEARS), symbols, 4)))
-    refs = {key: closes.get(sym) for key, sym in CASES_REFERENCE_SYMBOLS.items()}
-    refs.update(fred_factor_series(req.session))
-    refs.update(fred_slow_series(req.session))        # CPI 전년비·실업률·연준 총자산(국면별 변화에만 쓴다)
-    try:
-        monthly_gold = fetch_gold_monthly()
-    except (requests.RequestException, ValueError):
-        monthly_gold = None
-    asset = None
-    if focus:
-        entries, _omitted = portfolio_entries(req)
-        matched, found = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-        entry = next((e for e in matched if e["yahoo"]), None) if found else None
-        series = yahoo_closes(entry["yahoo"], LONG_PROXY_YEARS) if entry else None
-        if entry and series:
-            asset = {"name": entry["name"] or entry["symbol"], "series": series}
-    out = build_cases({k: v for k, v in refs.items() if v}, closes.get("GC=F"), monthly_gold, case_text, asset)
-    out["gold_available"] = bool(closes.get("GC=F") or monthly_gold)
-    return out
-
-
 ASSET_DRIVERS_MAX = 4          # 한 번에 요인 순위를 보는 종목 수
 ASSET_DRIVERS_YEARS = 20       # 10년 상관을 위해 종목과 요인 모두 넉넉히 받는다
-
-
-def asset_drivers_view(req: Request, args: dict | None = None) -> dict:
-    """이 종목이 평소 가장 민감한 매크로 요인 순위(1년·3년·10년 상관, 일관성, 같이 움직이는 요인 묶음). 읽기 전용, 같이 움직인 정도이며 원인의 증명이 아니다.
-    args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만(최대 4개). 금 ETF·주요 지수 ETF는 더 긴 대용 일봉(금 선물·지수)으로 본다."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-    entries = [e for e in entries if e["yahoo"]]
-    omitted += max(0, len(entries) - ASSET_DRIVERS_MAX)
-    entries = entries[:ASSET_DRIVERS_MAX]
-    sources = {e["yahoo"]: event_source_for(e["yahoo"]) for e in entries}
-    wanted = list(dict.fromkeys([f[0] for f in FACTORS] + [e["yahoo"] for e in entries] + [s["symbol"] for s in sources.values() if s]))
-    closes = dict(zip(wanted, parallel_map(lambda s: yahoo_closes(s, ASSET_DRIVERS_YEARS), wanted, FACTOR_WORKERS)))
-    factor_series = {f[0]: closes[f[0]] for f in FACTORS if closes.get(f[0])}
-    factor_series.update(fred_factor_series(req.session))
-    items = []
-    for e in entries:
-        own, source = closes.get(e["yahoo"]), sources.get(e["yahoo"])
-        proxy = closes.get(source["symbol"]) if source else None
-        used, label = (proxy, source["label"]) if proxy and (not own or len(proxy) > len(own)) else (own, None)
-        result = rank_drivers(used, factors_for(e["yahoo"], factor_series)) if used and factor_series else {"status": "no_data"}
-        items.append({"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "source": label, **result})
-    return {"items": items, "focus": focus, "focused": focused, "omitted": omitted}
 
 
 SCREEN_YEARS = 6        # 240주(약 4.6년) + 여유
@@ -1368,92 +1022,8 @@ SCREEN_WORKERS = 8
 SCREEN_MAX_MATCHES = 80  # 도구 결과에 담는 종목 수(전체 개수는 따로 알린다)
 
 
-def ma_screen_view(req: Request, args: dict | None = None) -> dict:
-    """주봉 이동평균 스크리너: S&P500 구성 종목(또는 내 보유·관심 종목) 중 종가가 지정한 주봉 MA 여러 개의 모두(또는 하나라도) 아래·위에 있는 종목. 읽기 전용.
-    args: universe("sp500"|"mine"), periods(예: [60,120,200,240]), side("below"|"above"), match("all"|"any"), sector(영문 GICS 업종, 선택).
-    S&P500은 500개 시세를 받아 첫 조회에 30~60초가 걸리고 이후에는 캐시된다. 같이 움직인 위치 정보일 뿐 매매 신호가 아니다."""
-    args = args if isinstance(args, dict) else {}
-    mine = args.get("universe") == "mine"
-    periods = clean_periods(args.get("periods"))
-    sector = str(args.get("sector") or "").strip()[:40]
-    if mine:
-        entries, _omitted = portfolio_entries(req)
-        universe = [{"symbol": e["yahoo"], "name": e["name"] or e["symbol"], "sector": ""} for e in entries if e["yahoo"]]
-    else:
-        try:
-            universe = fetch_sp500()
-        except ScreenerError as e:
-            raise ApiError(502, str(e))
-
-    def fetch(symbol):
-        try:
-            bars = get_yahoo_daily_history(symbol, years=SCREEN_YEARS)["bars"]
-        except (requests.RequestException, ValueError, KeyError, IndexError):
-            return None
-        return weekly_closes(bars), (bars[-1][0] if bars else None)
-    wanted = [u["symbol"] for u in universe if not sector or sector.lower() in str(u.get("sector") or "").lower()]
-    got = dict(zip(wanted, parallel_map(fetch, wanted, SCREEN_WORKERS)))
-    weekly = {s: v[0] for s, v in got.items() if v is not None}
-    as_of = max((v[1] for v in got.values() if v and v[1]), default=None)
-    out = run_screen(universe, weekly, periods, str(args.get("side") or "below"), str(args.get("match") or "all"), sector or None)
-    out.update({"universe_name": "mine" if mine else "sp500", "sector": sector, "as_of": as_of.isoformat() if as_of else None,
-                "total_matches": len(out["matches"])})
-    out["symbols"] = [m["symbol"] for m in out["matches"]][:300]       # 표에 넣지 못한 종목도 코드는 모두 알려 준다
-    out["matches"] = out["matches"][:SCREEN_MAX_MATCHES]
-    return out
-
-
 TREND_YEARS = 30        # 전 고점(상장 이후 최고 종가)을 구하려고 받을 수 있는 시세를 길게 받는다(업종 ETF는 1998년~). 12개월 수익률·200일선·12주 전 상태에는 2년 남짓이면 충분하다
 TREND_UNIVERSE_MAX = 25
-
-
-def trend_view(req: Request, args: dict | None = None) -> dict:
-    """미국 업종 ETF(SPDR 11개) 또는 내 보유·관심 종목의 추세 사다리와 전환 상태. 읽기 전용, 위치·방향 정보일 뿐 매매 신호가 아니다.
-    args: universe("sectors"|"mine"), focus("all"|"short"|"mid"|"long": 보이는 순서만 바꾼다), 이번 질문에서만 판정 기준을 바꾸는 값(buffer_pct 등, 올바르지 않으면 무시).
-    기본 기준은 trend.DEFAULTS(버퍼 ±2%, 연속 2주 확인, 21·63·252거래일, 50·200일선)."""
-    args = args if isinstance(args, dict) else {}
-    mine = args.get("universe") == "mine"
-    cfg = trend_mod.clean_settings(trend_mod.valid_overrides(args))
-    if mine:
-        entries, _omitted = portfolio_entries(req)
-        listed = [(e["yahoo"], e["name"] or e["symbol"]) for e in entries if e["yahoo"]][:TREND_UNIVERSE_MAX]
-    else:
-        listed = list(trend_mod.SECTOR_ETFS)
-    names = dict(listed)
-    wanted = list(dict.fromkeys([s for s, _ in listed] + [trend_mod.BENCHMARK[0]]))
-    closes = dict(zip(wanted, parallel_map(lambda s: yahoo_closes(s, TREND_YEARS), wanted, FACTOR_WORKERS)))
-
-    def ordered(series):
-        return [series[d] for d in sorted(series)] if series else []
-    out = trend_mod.analyze({s: ordered(closes.get(s)) for s, _ in listed if closes.get(s)}, names, cfg, ordered(closes.get(trend_mod.BENCHMARK[0])) or None,
-                            str(args.get("focus") or "all"))
-    out["insufficient"] += [s for s, _ in listed if not closes.get(s)]     # 시세를 못 받은 종목도 '판단하지 못함'으로 알린다
-    last_dates = [max(c) for c in closes.values() if c]
-    out.update({"universe": "mine" if mine else "sectors", "as_of": max(last_dates).isoformat() if last_dates else None})
-    return out
-
-
-def weekly_news_view(req: Request, args: dict | None = None) -> dict:
-    """보유 종목(현금 취급 제외)과 관심종목의 최근 5거래일 등락률 + 최근 7일 뉴스 헤드라인. 읽기 전용.
-    뉴스 조회어에는 종목 이름·코드만 쓰고 수량·금액·계좌 정보는 보내지 않는다. args["focus"]에 종목 이름·코드·카테고리 이름이 있으면 그 종목만."""
-    focus = str((args or {}).get("focus") or "").strip()[:200]
-    entries, omitted = portfolio_entries(req)
-    entries, focused = focus_with_extras(req, entries, load_rebalance_config(req.store)["targets"], focus)
-
-    def change(entry):
-        if not entry["yahoo"]:
-            return None
-        try:
-            return weekly_change_pct([bar[1] for bar in get_yahoo_daily_history(entry["yahoo"])["bars"]])
-        except (requests.RequestException, ValueError, KeyError, IndexError):
-            return None
-    changes = parallel_map(change, entries, 4)
-    headlines = headlines_for_many([{"symbol": e["symbol"], "name": e["name"], "use_yahoo": e["currency"] != "KRW"} for e in entries])
-    items = [{"symbol": e["symbol"], "name": e["name"], "held": e["held"], "extra": e.get("extra", False), "weekly_change_pct": c,
-              "headlines": headlines[e["symbol"]]["headlines"], "news_error": headlines[e["symbol"]]["error"]}
-             for e, c in zip(entries, changes)]
-    items.sort(key=lambda x: (x["weekly_change_pct"] is None, -abs(x["weekly_change_pct"] or 0), not x["held"]))
-    return {"items": items, "omitted": omitted, "focus": focus, "focused": focused}
 
 
 def strategy_signals_for(session: dict, store: UserStore, held: set[str], symbols: list[str]) -> dict[str, dict]:
@@ -1569,6 +1139,16 @@ def execute_agent_tool(req: Request, name: str, args: dict | None = None) -> dic
         payload = ma_screen_view(req, args if isinstance(args, dict) else None)
     elif name == "get_sector_trends":
         payload = trend_view(req, args if isinstance(args, dict) else None)
+    elif name == "web_search":
+        payload = web_lookup.search((args or {}).get("query") if isinstance(args, dict) else "")
+    elif name == "read_page":
+        payload = web_lookup.read_page((args or {}).get("url") if isinstance(args, dict) else "")
+    elif name == "get_my_rules":
+        payload = my_rules_view(req, args if isinstance(args, dict) else None)
+    elif name == "get_past_value":
+        payload = past_value_view(req, args if isinstance(args, dict) else None)
+    elif name == "query_data":
+        payload = query_data_view(req, args if isinstance(args, dict) else {})
     elif name == "get_indicators":
         payload = indicators_view(req, args if isinstance(args, dict) else None)
     elif name == "get_valuation":
@@ -1578,7 +1158,7 @@ def execute_agent_tool(req: Request, name: str, args: dict | None = None) -> dic
     elif name == "get_drawdown_analysis":
         payload = drawdown_view(req, args if isinstance(args, dict) else None)
     else:
-        payload = get_tax(req)
+        raise ApiError(400, "허용되지 않은 도구입니다.")
     return format_tool_result(name, payload)
 
 
@@ -1775,6 +1355,114 @@ def post_feature_requests(req: Request):
     return {"ok": True, **record_feature_request(req.store, topic, str(req.body.get("question") or ""))}
 
 
+# 로컬 모델(Ollama) 설정: 사용자가 끌 수 있다(기본은 켜짐, 모델이 준비돼 있을 때만 쓴다). API 요금이 없고 이 컴퓨터 안에서만 통신한다.
+LOCAL_SETTINGS_FILE = "agent_local.json"
+
+
+def local_enabled(store: UserStore) -> bool:
+    data = store.read_json(LOCAL_SETTINGS_FILE)
+    return bool(data.get("enabled", True)) if isinstance(data, dict) else True
+
+
+def local_state(store: UserStore) -> dict:
+    st = local_model.status()
+    return {"enabled": local_enabled(store), "reachable": st["reachable"], "ready": st["ready"], "model": st["model"]}
+
+
+LOCAL_MAX_TOOLS = 5            # 한 질문에서 로컬 모델이 부를 수 있는 도구 총수
+
+
+def try_local_plan(req: Request, question: str, history: list[dict]) -> dict | None:
+    """로컬 모델이 도구 호출 계획을 세운다. 꺼져 있거나 모델이 없거나 실패하거나 도구를 못 골랐으면 None(규칙 기반 처리로 되돌아간다).
+    반환: {"calls": [...], "messages": 이어서 쓸 대화, "assistant": 모델 응답}."""
+    state = local_state(req.store)
+    if not (state["enabled"] and state["ready"]):
+        return None
+    try:
+        got = local_model.plan(question, history, state["model"])
+    except (requests.RequestException, ValueError, KeyError):
+        local_model.reset_status_cache()
+        return None
+    return got if got["calls"] else None
+
+
+def tool_digest(name: str, result: dict) -> str:
+    """도구 결과를 모델이 읽을 한국어 요약 글로: 답변 조립 코드가 만든 요약 줄·그래프 제목·부제·표 제목(숫자는 도구가 계산한 값 그대로)."""
+    answer = compose_agent_answer({name: result})
+    lines = [str(b) for b in answer.get("bullets", []) if str(b).strip()]
+    for c in answer.get("charts", [])[:4]:
+        lines.append(" ".join(x for x in (c.get("title"), c.get("subtitle")) if x))
+        for d in c.get("datasets", [])[:2]:
+            texts = d.get("text") or []
+            if texts:
+                lines.append(" / ".join(f"{label}: {text}".replace("\n", " ") for label, text in zip(c.get("labels", []), texts)))
+    for t in answer.get("tables", [])[:2]:
+        lines.append(str(t.get("title") or ""))
+    for n in answer.get("notes", [])[:2]:
+        lines.append(str(n))
+    return "\n".join(lines)[:1200]
+
+
+def local_follow_up(req: Request, question: str, plan: dict, calls: list[dict], results: dict, run) -> str | None:
+    """도구 결과를 모델에게 보여 주고 더 부를 도구가 있으면 실행하는 것을 최대 LOCAL_MAX_ROUNDS번 되풀이한 뒤 모델의 최종 답을 돌려준다(없으면 None).
+    run(name, args, reason)은 도구를 실행해 results에 넣는다. 실패하면 그때까지의 결과로 끝낸다."""
+    state = local_state(req.store)
+    messages = plan["messages"]
+    final = None
+    for round_no in range(local_model.MAX_ROUNDS + 1):
+        digests = {c["name"]: tool_digest(c["name"], results[c["name"]]) for c in calls if c["name"] in results}
+        try:
+            step = local_model.observe(messages, calls, digests, question, state["model"])
+        except (requests.RequestException, ValueError, KeyError):
+            local_model.reset_status_cache()
+            return None
+        if step["final"]:
+            facts = "\n".join(tool_digest(n, r) for n, r in results.items())
+            final = local_model.usable_final(step["final"], facts)
+            break
+        new = [c for c in step["calls"] if c["name"] not in results or (c["name"] == "query_data" and results[c["name"]].get("error"))][:max(0, LOCAL_MAX_TOOLS - len(results))]  # 조회 명령이 틀렸으면 한 번 다시 고치게 한다
+        if not new or round_no >= local_model.MAX_ROUNDS:
+            break
+        for c in new:
+            try:
+                run(c["name"], c["args"], "로컬 모델이 결과를 보고 추가로 선택")
+            except (ApiError, ValueError):
+                pass
+        calls = [c for c in new if c["name"] in results]
+        if not calls:
+            break
+    return final
+
+
+def local_summary(req: Request, question: str, answer: dict) -> str | None:
+    """도구가 만든 답변 글(요약 줄·그래프 제목·부제)을 근거로 로컬 모델이 질문에 직접 답하는 한두 문장을 쓴다. 근거에 없는 숫자가 있으면 버린다."""
+    facts = [str(b) for b in answer.get("bullets", []) if str(b).strip()]
+    for c in answer.get("charts", [])[:4]:
+        facts.append(" ".join(x for x in (c.get("title"), c.get("subtitle")) if x))
+    for t in answer.get("tables", [])[:2]:
+        facts.append(str(t.get("title") or ""))
+    if not facts:
+        return None
+    try:
+        return local_model.summarize(question, "\n".join(facts), local_state(req.store)["model"])
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+
+
+@route("GET", "/api/agent/local")
+def get_agent_local(req: Request):
+    return local_state(req.store)
+
+
+@route("POST", "/api/agent/local")
+def post_agent_local(req: Request):
+    """로컬 모델 사용 켜기/끄기({enabled})."""
+    enabled = bool(req.body.get("enabled"))
+    req.store.write_json(LOCAL_SETTINGS_FILE, {"enabled": enabled})
+    local_model.reset_status_cache()
+    return {"ok": True, **local_state(req.store)}
+
+
 @route("POST", "/api/agent/query", max_body=65536)  # 대화 문맥(최근 8개 × 2,000자, 한글은 글자당 3바이트)이 기본 8KB를 넘는다
 def post_agent_query(req: Request):
     """API 키가 있으면 LLM 도구 호출, 없으면 규칙 기반 대체 경로로 질문을 처리한다."""
@@ -1794,19 +1482,26 @@ def post_agent_query(req: Request):
         except AgentApiError as e:
             raise ApiError(502, str(e))
     matcher, taught = intent_matcher_for(req.store)
-    via, understood = None, None
+    via, understood, local_args = None, None, {}
+    limit = match_limit(question)                    # 도구가 없다고 아는 주제(배당 내역·RSI·목표주가…)나 주문 요청
     if taught.get(normalize_question(question)):    # 사용자가 가르친 문장은 키워드보다 먼저(가르친 대로 처리)
         via, plan = "taught", plan_for_intent(taught[normalize_question(question)])
+    elif limit and limit.get("exclusive"):           # 주문 요청·내 매매 습관 평가는 어떤 도구(규칙·로컬 모델)로도 대신 답하지 않는다 — 안 된다고 알린다
+        plan = {"supported": False, "intents": [], "tools": []}
     else:
         try:
             plan = plan_agent_query(question)
         except ValueError as e:
             raise ApiError(400, str(e))
+        local_plan = try_local_plan(req, question, normalize_history(req.body.get("history"))) if question else None   # 로컬 모델(Ollama)이 준비돼 있으면 모델이 도구를 고른다
+        if local_plan:
+            calls = local_plan["calls"]
+            via, plan = "local", {"supported": True, "intents": ["local"], "tools": [c["name"] for c in calls]}
+            local_args = {c["name"]: c["args"] for c in calls}
     pending = req.session.pop("intent_pending", None)    # 바로 앞에서 처리 못 했거나 짐작만 했던 질문(한 번만 쓰고 지운다)
     learned_now = None
     if via is None and plan["supported"] and pending and time.time() - pending["ts"] <= AUTO_LEARN_WINDOW:
         learned_now = learn_from_followup(req.store, matcher, pending["question"], question, plan)
-    limit = match_limit(question)                    # 도구가 없다고 아는 주제(배당 내역·RSI·목표주가…)나 주문 요청
     info = focus_info(req, question) if (not plan["supported"] or FOCUS_TOOLS & set(plan["tools"])) else {"found": False, "names": [], "unknown": [], "extra_names": []}
     if not plan["supported"] and info["found"] and not limit:   # 키워드는 없지만 내 종목·카테고리를 가리키면 그 종목의 움직임·요인·보도·앞으로의 뷰를 한꺼번에 보여 준다
         plan = plan_for_holding()
@@ -1822,7 +1517,7 @@ def post_agent_query(req: Request):
         results[name] = output["result"]
         executions.append({"tool": name, "description": definitions[name]["description"], **({"reason": reason} if reason else {})})
     for name in plan["tools"]:
-        run_tool(name, (parse_screen_query(question) if name == "get_ma_screen" else parse_trend_query(question) if name == "get_sector_trends"
+        run_tool(name, local_args[name] if name in local_args else (parse_screen_query(question) if name == "get_ma_screen" else parse_trend_query(question) if name == "get_sector_trends"
                         else parse_response_query(question) if name == "get_factor_response"
                         else parse_indicator_query(question) if name == "get_indicators"
                         else {"focus": question, "case": question} if name == "get_macro_cases" else {"focus": question}) if (name in FOCUS_TOOLS or name in ("get_ma_screen", "get_sector_trends", "get_factor_response", "get_indicators")) else None)  # 규칙 기반 모드는 질문 문장에서 종목·사례·요인을 찾는다
@@ -1833,8 +1528,20 @@ def post_agent_query(req: Request):
                 run_tool(step["tool"], step["args"], step["reason"])
             except (ApiError, ValueError):
                 extra_failed.append(step["reason"])
+    local_final = None
+    if via == "local":                                            # 도구 결과를 모델이 보고 더 필요한 도구를 부르거나 최종 답을 쓴다(최대 2번 더)
+        def run_more(name, args, reason):
+            run_tool(name, args, reason)
+        local_final = local_follow_up(req, question, local_plan, local_plan["calls"], results, run_more)
     answer = compose_agent_answer(results)
     answer["bullets"].extend(observations(results))
+    if via == "local":
+        summary = local_final or local_summary(req, question, answer)    # 모델의 최종 답(없으면 두 문장 요약). 근거에 없는 숫자가 있으면 붙이지 않는다
+        if summary:
+            answer["bullets"].insert(0, "요약: " + summary)
+        answer["notes"].append(f"로컬 모델({local_state(req.store)['model']})이 질문을 이해해 도구를 골랐습니다. 숫자·표·그래프는 도구가 계산한 값입니다.")
+    if is_decision_query(question):    # 사도 돼·팔까 같은 질문은 결론 없이 재료만 — 맨 앞에 밝힌다
+        answer["bullets"].insert(0, DECISION_NOTICE)
     if extra_failed:
         answer["notes"].append("추가로 확인하려던 것을 가져오지 못했습니다: " + " / ".join(extra_failed))
     if plan["supported"] and info["unknown"]:
@@ -1863,7 +1570,7 @@ def post_agent_query(req: Request):
                            "understood": {"intent": understood["intent"], "label": INTENT_LABELS[understood["intent"]], "score": round(understood["score"], 2)} if understood else None,
                            "choices": [{"intent": k, "label": INTENT_LABELS[k]} for k in TEACHABLE_INTENTS]}
     return {
-        "mode": "rule_based_preview",
+        "mode": "local_model" if via == "local" else "rule_based_preview",
         "question": question,
         "plan": plan,
         "executions": executions,

@@ -158,6 +158,7 @@ class HttpTestBase(TempDataDirMixin):
             "fetch_watchlist_rows": mock.Mock(side_effect=lambda token, syms: [{"symbol": s} for s in syms]),
             "validate_weekly_report_symbols": mock.Mock(return_value=[]),
             "fetch_top_holdings": mock.Mock(return_value={"status": "none", "holdings": []}),   # ETF 편입 조회로 실제 네트워크를 쓰지 않는다
+            "try_local_plan": mock.Mock(return_value=None),                                       # 이 컴퓨터의 로컬 모델(Ollama)을 시험이 부르지 않게
             "search_stocks": mock.Mock(return_value=[]),                                          # 질문 속 새 종목 검색(토스·네이버)으로 실제 네트워크를 쓰지 않는다
             "fetch_fundamentals": mock.Mock(return_value={"status": "error", "metrics": None}),   # 밸류에이션 조회로 실제 네트워크를 쓰지 않는다
             "fetch_gold_monthly": mock.Mock(side_effect=ValueError("테스트: 금 월간 시세 조회 차단")),
@@ -172,6 +173,13 @@ class HttpTestBase(TempDataDirMixin):
             self.addCleanup(p.stop)
         server.reset_default_fred_key()
         self.addCleanup(server.reset_default_fred_key)
+        status_patch = mock.patch.object(server.local_model, "status", mock.Mock(return_value={"reachable": False, "ready": False, "model": server.local_model.DEFAULT_MODEL, "models": []}))
+        status_patch.start()                                                                  # 이 컴퓨터의 Ollama 상태를 시험이 보지 않게
+        self.addCleanup(status_patch.stop)
+        for web_name in ("search", "read_page"):                                              # 웹 검색·페이지 읽기로 실제 네트워크를 쓰지 않는다
+            web_patch = mock.patch.object(server.web_lookup, web_name, mock.Mock(return_value={"query": "", "url": "", "results": [], "error": "테스트: 웹 접속 차단"}))
+            web_patch.start()
+            self.addCleanup(web_patch.stop)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -180,7 +188,7 @@ class HttpTestBase(TempDataDirMixin):
         self.port = self.httpd.server_address[1]
 
     def request(self, method, path, body=None, cookie=None, host=HOST_HEADER, origin=None, raw=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
         headers = {"Host": host}
         if cookie:
             headers["Cookie"] = cookie
@@ -354,31 +362,6 @@ class HttpTest(HttpTestBase, unittest.TestCase):
             self.request("GET", "/api/holdings", cookie=cookie)
             self.assertEqual(fetch.call_count, 2)
 
-    def test_tax_page_and_settings(self):
-        cookie = self.login("key-a")
-        snap = {"usd_krw": 1000.0, "cash_krw": 0.0, "cash_usd": 0.0, "items": [
-            {"symbol": "AAPL", "name": "Apple", "currency": "USD", "quantity": 1, "marketCountry": "US",
-             "marketValue": {"amount": 5000.0}, "profitLoss": {"amountAfterCost": 3000.0, "rateAfterCost": 1.5}}]}
-        fx = {"bars": [(date(2026, 1, 2), 1000.0, 1000.0)], "divs": [], "name": "KRW=X"}
-        with mock.patch.object(server, "fetch_account_snapshot", return_value=snap), \
-                mock.patch.object(server, "get_closed_orders", return_value=[]), \
-                mock.patch.object(server, "get_yahoo_daily_history", return_value=fx), \
-                mock.patch.object(portfolio, "get_cached_usd_jpy_quote", return_value=None):
-            status, data, _ = self.request("GET", "/api/tax", cookie=cookie)
-            self.assertEqual(data["realized_source"], "auto")
-            self.assertEqual(status, 200)
-            self.assertAlmostEqual(data["summary"]["gain_tax_if_sell_all_krw"], (3_000_000 - 2_500_000) * 0.22)
-            settings = data["settings"]
-            settings["realized_overseas_gain_ytd_krw"] = 2_500_000
-            settings["use_manual_realized"] = True
-            self.assertEqual(self.request("POST", "/api/tax-settings", {"settings": settings}, cookie=cookie)[0], 200)
-            data = self.request("GET", "/api/tax", cookie=cookie)[1]
-            self.assertAlmostEqual(data["summary"]["gain_tax_if_sell_all_krw"], 3_000_000 * 0.22)
-        settings["overseas_gain_rate_pct"] = 500
-        status, payload, _ = self.request("POST", "/api/tax-settings", {"settings": settings}, cookie=cookie)
-        self.assertEqual(status, 400)
-        self.assertIn("해외 양도세율", payload["error"])
-
     def test_trades_endpoint(self):
         cookie = self.login("key-a")
         orders = [{"orderId": "1", "symbol": "AAPL", "side": "BUY", "currency": "USD", "status": "FILLED",
@@ -398,7 +381,7 @@ class HttpTest(HttpTestBase, unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/trades?year=abc", cookie=cookie)[0], 400)
         self.assertEqual(self.request("GET", "/api/trades?year=1999", cookie=cookie)[0], 400)
 
-    def test_dividends_endpoint_and_tax_income(self):
+    def test_dividends_endpoint(self):
         cookie = self.login("key-a")
         snap = {"usd_krw": 1000.0, "cash_krw": 0.0, "cash_usd": 0.0, "items": [
             {"symbol": "AAPL", "name": "Apple", "currency": "USD", "quantity": 4, "marketCountry": "US",
@@ -418,9 +401,7 @@ class HttpTest(HttpTestBase, unittest.TestCase):
             status, data, _ = self.request("GET", "/api/dividends", cookie=cookie)
             self.assertEqual(status, 200)
             self.assertAlmostEqual(data["total_gross_krw"], 4 * 0.25 * 1000)   # 체결 내역 없음 → 지금 보유 4주로 보정
-            tax_data = self.request("GET", "/api/tax", cookie=cookie)[1]
-        self.assertEqual(tax_data["income_source"], "auto")
-        self.assertAlmostEqual(tax_data["summary"]["financial_income_ytd_krw"], 1000.0)
+        self.assertEqual(self.request("GET", "/api/tax", cookie=cookie)[0], 404)                          # 세금 기능은 없다
 
     def test_logout(self):
         a = self.login("key-a")

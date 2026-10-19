@@ -1,4 +1,4 @@
-"""Agent 답변 그래프(charts.py + agent_tools의 _charts_*): 명세 검증·정리, 답변 종류별 그래프(요인 변화·기여, 요인 순위, ETF 기여, 스크리너 업종, 전망, 과거 반응, 사례, 뉴스, 보유 비중·리밸런싱, 세금, 섹터),
+"""Agent 답변 그래프(charts.py + agent_tools의 _charts_*): 명세 검증·정리, 답변 종류별 그래프(요인 변화·기여, 요인 순위, ETF 기여, 스크리너 업종, 전망, 과거 반응, 사례, 뉴스, 보유 비중·리밸런싱, 섹터),
 계좌·링크가 명세에 새지 않는지, 화면 연결(스크립트 포함·호출)."""
 from __future__ import annotations
 
@@ -163,11 +163,7 @@ class AnswerChartsTest(unittest.TestCase):
         self.assertEqual(moves["datasets"][0]["text"], ["매수 300원", "매도 100원"])
         self.assertEqual(moves["unit"], "원")
 
-    def test_tax_and_sector_charts(self):
-        tax = {"summary": {"estimated_tax_krw": 5000, "capital_gains_tax_krw": 4000, "domestic_transaction_and_etf_tax_krw": 1000}, "warnings": [], "limitations": []}
-        chart = compose_agent_answer({"estimate_liquidation_tax": tax})["charts"][0]
-        self.assertEqual((chart["labels"], chart["datasets"][0]["data"]), (["해외 양도세", "국내 거래세·ETF 세금"], [4000.0, 1000.0]))
-        self.assertIn("추정치", chart["caption"])
+    def test_sector_chart(self):
         sector = {"configured": True, "unmapped_count": 0, "limitations": [],
                   "sectors": [{"label": "기술", "exposure_pct": 30.0, "exposure_krw": 300, "holdings": []}, {"label": "금융", "exposure_pct": 10.0, "exposure_krw": 100, "holdings": []}]}
         chart = compose_agent_answer({"get_sector_exposure": sector})["charts"][0]

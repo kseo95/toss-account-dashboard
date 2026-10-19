@@ -13,10 +13,11 @@ redo/
 ├── sectors.py         # 섹터 매핑(직접 입력 + 토스 분류 자동 채우기): 설정 검증, 섹터별 내 노출, 토스 섹터 색인·후보
 ├── strategy.py        # 분할매수 전략: 템플릿 검증, 평가(래칫·회복·배수·n차 사이클), 매수/매도 금액
 ├── weekly_report.py   # 주간 리포트: Yahoo 일봉 → 주봉 지표, 자동 코멘트, 내 계좌
-├── tax.py             # 세금 추정: 증권거래세·해외 양도세(연간 합산·공제)·기타 ETF, 세율 설정, 법 출처 표
 ├── trades.py          # 체결 내역(종료된 주문 → 체결), 해외 실현 손익(선입선출·결제일 환율)
 ├── dividends.py       # 배당 추정(배당락일 보유 수량 × Yahoo 배당 기록, 원천징수)
-├── agent_tools.py      # Agent용 읽기 전용 도구 계약 + 비민감 결과 축약
+├── agent_tools.py      # Agent 도구 모음 조립(정의 목록·format_tool_result·compose_agent_answer) — 얇은 파일
+├── tools/              # 도구별 정의·결과 정리·답변 조립(account, outlook, trend, macro, drawdown, valuation, indicators, rules, past, query, web) + routing.py(질문 해석 규칙) + common.py
+├── views/              # 도구 실행 코드(*_view). server.py의 이름은 S.이름으로 늦게 찾아 부른다(테스트의 patch가 그대로 먹게)
 ├── claude_agent.py     # AI 모드: Claude API 도구 호출 루프(키는 세션 메모리에만)
 ├── etf_holdings.py    # ETF 상위 편입 종목·비중(야후 funds_data, 하루 캐시, 상태 구분)
 ├── etf_breakdown.py   # ETF 등락을 편입 종목 기여(비중×등락)로 분해(순수 계산, 같은 날짜 기준·그 밖 암시 수익률·경고 플래그)
@@ -34,7 +35,7 @@ redo/
 ├── news.py            # 종목별 최근 7일 뉴스 헤드라인(야후 검색 + 구글 뉴스 RSS, 비공식) 수집·정리, 5거래일 등락률
 ├── dashboard.html     # 마크업만
 ├── static/css/app.css
-├── static/js/         # common → portfolio → sectors → watch → strategy → report → tax → app 순서로 로드
+├── static/js/         # common → portfolio → sectors → watch → strategy → report → trades → app 순서로 로드
 ├── tests/             # unittest
 └── data/              # .gitignore — server_secret, legacy_migrated, users/<user_id>/*.json
 ```
@@ -59,8 +60,8 @@ redo/
 
 ## AI Agent 도구 계층 (v1)
 - `GET /api/agent/tools`: 허용된 읽기 전용 도구의 이름·설명·입력 스키마를 반환한다.
-- `POST /api/agent/tool`: 서버가 기존 계산 함수를 실행한 뒤 `agent_tools.py`가 허용한 필드만 축약해 반환한다.
-- 현재 도구는 포트폴리오 요약, 주간 위험 점검, 전량 매도 가정 세금 추정, 섹터 노출, 이번 주 종목 뉴스, 매크로 요인, 앞으로의 상승/하락 뷰, ETF 구성 종목 분해, 과거 매크로 충격 반응, 거시 사례집, 요인 순위, 이동평균 스크리너, 미국 업종 ETF 상태, 고점 대비 낙폭 원인 분석, 요인이 움직일 때 자산 반응, 밸류에이션, 보조지표(RSI·MACD·볼린저) 17개다. 규칙 기반 모드 답변은 `charts.py`가 만든 그래프 명세(`answer.charts`)를 `static/js/agent_charts.js`가 Chart.js로 그린다. 규칙 기반 모드는 `agent_loop.py`가 결과를 보고 최대 2개 도구를 더 부른다.
+- `POST /api/agent/tool`: 서버가 기존 계산 함수를 실행한 뒤 `tools/`의 결과 정리 함수(`agent_tools.format_tool_result`)가 허용한 필드만 축약해 반환한다. 새 도구는 `tools/<이름>.py`(DEFINITIONS·FORMATTERS·COMPOSERS)와 `views/<이름>.py`를 만들고 `tools/__init__.py`·`agent_tools.py`의 순서 목록·`server.execute_agent_tool` 분기에 넣는다.
+- 현재 도구는 포트폴리오 요약, 주간 위험 점검, 섹터 노출, 이번 주 종목 뉴스, 매크로 요인, 앞으로의 상승/하락 뷰, ETF 구성 종목 분해, 과거 매크로 충격 반응, 거시 사례집, 요인 순위, 이동평균 스크리너, 미국 업종 ETF 상태, 고점 대비 낙폭 원인 분석, 요인이 움직일 때 자산 반응, 밸류에이션, 보조지표(RSI·MACD·볼린저), 내 원칙(목표 비중·전략) 대조, 범용 자산 조회(`data_query.py`, 현금 포함 묶기·합계), 과거 시세 가정 계산(`history_calc.py`), 웹 검색·페이지 읽기(`web_lookup.py`, 로컬 모델 전용) 21개다. 규칙 기반 모드 답변은 `charts.py`가 만든 그래프 명세(`answer.charts`)를 `static/js/agent_charts.js`가 Chart.js로 그린다. 로컬 모델(`local_model.py`)이 켜져 있으면 모델이 도구를 고르고 결과를 보며 최대 2번 더 생각하며(Log 70) 실패하면 규칙 기반으로 되돌아간다. 규칙 기반 모드는 `agent_loop.py`가 결과를 보고 최대 2개 도구를 더 부른다.
 - 질문 실행 API는 API 키가 있으면 모델 도구 호출을 수행하고, 없으면 규칙으로 필요한 도구를 선택해 결과를 조합한다.
 - Agent 탭은 예시 질문, 실행 도구 추적, 답변과 계산 한계를 표시한다.
 - Anthropic API 키가 설정되면 claude_agent.py가 Claude Messages API(공식 `anthropic` 패키지, 수동 도구 루프)로 질문을 처리한다. 모델은 허용된 도구만 선택하며 서버가 실행한 축약 결과를 받아 최종 답변한다. 패키지는 이 모드에서만 불러오고, 없으면 설치 안내를 보여준다.
@@ -75,7 +76,6 @@ redo/
 - `test_portfolio.py`: 리밸런싱·통화 비중, 설정 검증.
 - `test_trades.py`: 주문 목록 페이지 넘기기, 체결 골라내기·합계, 실현 손익(선입선출·환율·연도·불완전 표시).
 - `test_dividends.py`: 배당락일 보유 수량, 예전 보유분 보정, 원천징수, 연도·환율.
-- `test_tax.py`: 국내 종목 종류 추정, 시장별 거래세, 해외 양도세 합산·공제·올해 실현분, 기타 ETF, 대주주, 매도 세금 비율, 설정 검증.
 - `test_storage_http.py`: user_id, 저장소 왕복·기본값, 예전 파일 이전, 실제 Handler를 임시 포트로 띄운 HTTP 테스트(로그인, 401/403/413/404, 잘못된 JSON, 정적 파일·경로 조작 차단, 계좌 원자료 캐시, 사용자 분리).
 - `test_sectors.py`: 섹터 설정 검증, 저장 왕복·깨진 파일, 노출 계산, 섹터 HTTP 라우트(사용자 분리·종목 실존 확인), Agent 도구 계약, 토스 섹터 호출 검증, 색인 수집(이어하기·실패 저장·진행률)·후보 계산, 자동 채우기 라우트(상태 전이·시장 제한·사용자 분리).
 - `test_trade_quantities.py`: 리밸런싱 매수·매도 종목별 주수(설정 저장 → 보유 → 필요한 종목만 시세 조회 → Agent 답변), 시세 조회 실패 처리, 주봉 MA 전략 신호 반영(지금/대기 금액, 전략 제외, 신호 실패, 상태 미저장).

@@ -66,8 +66,8 @@ class IntentLearningTest(IntentTestBase, unittest.TestCase):
 
     def test_keyword_questions_do_not_show_the_teach_buttons(self):
         cookie = self.login("key-a")
-        payload = self.ask(cookie, "전부 팔면 세금은?")
-        self.assertEqual(self.tools(), ["estimate_liquidation_tax"])
+        payload = self.ask(cookie, "섹터 노출 보여줘")
+        self.assertEqual(self.tools(), ["get_sector_exposure"])
         self.assertNotIn("teach", payload["answer"])
 
     def test_a_guess_of_holding_is_ignored_because_it_needs_a_named_stock(self):
@@ -80,7 +80,7 @@ class IntentLearningTest(IntentTestBase, unittest.TestCase):
     # --- 가르치기 ---
     def test_taught_sentence_is_handled_as_taught_even_against_keywords(self):
         cookie = self.login("key-a")
-        sentence = "전부 팔면 세금은 말고 뉴스가 궁금해"                      # 키워드('세금')는 세금 도구를 가리키지만
+        sentence = "섹터 노출 말고 뉴스가 궁금해"                      # 키워드('섹터')는 섹터 도구를 가리키지만
         self.assertEqual(self.teach(cookie, sentence, "news")[0], 200)
         payload = self.ask(cookie, sentence)
         self.assertEqual(self.tools(), ["get_weekly_news"])                  # 가르친 대로 처리
@@ -102,9 +102,9 @@ class IntentLearningTest(IntentTestBase, unittest.TestCase):
     def test_same_sentence_is_updated_not_duplicated_and_old_ones_drop_at_the_cap(self):
         cookie = self.login("key-a")
         self.teach(cookie, "주머니 사정 두루 살펴보기", "weekly")
-        self.assertEqual(self.teach(cookie, "주머니 사정 두루 살펴보기!!", "tax")[1]["count"], 1)           # 부호만 달라도 같은 문장 → 의도 갱신
+        self.assertEqual(self.teach(cookie, "주머니 사정 두루 살펴보기!!", "sector")[1]["count"], 1)           # 부호만 달라도 같은 문장 → 의도 갱신
         self.ask(cookie, "주머니 사정 두루 살펴보기")
-        self.assertEqual(self.tools(), ["estimate_liquidation_tax"])
+        self.assertEqual(self.tools(), ["get_sector_exposure"])
         for i in range(server.MAX_LEARNED + 5):
             self.teach(cookie, f"테스트용 학습 문장 번호 {'가나다라마바사아자차카타파하'[i % 14]}{'가' * (i // 14)} 끝", "news")
         count = self.request("GET", "/api/agent/teach", cookie=cookie)[1]["count"]
@@ -170,7 +170,7 @@ class AutoLearningTest(IntentTestBase, unittest.TestCase):
         cookie = self.login("key-a")
         self.ask(cookie, self.UNPLACED)
         self.ask(cookie, self.FOLLOWUP)
-        again = self.ask(cookie, "전부 팔면 세금은?")
+        again = self.ask(cookie, "섹터 노출 보여줘")
         self.assertNotIn("learned", again["answer"])
         self.assertEqual(self.request("GET", "/api/agent/teach", cookie=cookie)[1]["count"], 1)
 
@@ -238,7 +238,7 @@ class AutoLearningTest(IntentTestBase, unittest.TestCase):
         self.ask(cookie, NOTHING)
         self.ask(cookie, SIMILAR_ONLY)
         self.ask(cookie, NOTHING + "!")                                                                     # 같은 문장은 한 번만
-        self.ask(cookie, "전부 팔면 세금은?")                                                                # 키워드로 처리된 질문은 기록하지 않는다
+        self.ask(cookie, "섹터 노출 보여줘")                                                                # 키워드로 처리된 질문은 기록하지 않는다
         items = self.request("GET", "/api/agent/misses", cookie=cookie)[1]["items"]
         self.assertEqual([(r["kind"], r["guess"]) for r in items], [("guessed", "why"), ("unplaced", None)])
         self.assertTrue(all(r["at"] for r in items))
